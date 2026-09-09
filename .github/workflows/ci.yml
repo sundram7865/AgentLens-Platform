@@ -1,0 +1,213 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  python:
+    name: Lint, type-check, test
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: packages/obs-platform/requirements-dev.txt
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/obs-platform/requirements-dev.txt
+          pip install --no-deps -e packages/obs-sdk -e packages/obs-platform
+
+      - name: Ruff (lint)
+        run: ruff check .
+
+      - name: Ruff (format check)
+        run: ruff format --check .
+
+      - name: mypy
+        run: mypy
+
+      - name: Tests
+        # No services block on purpose: the suite runs against SQLite and
+        # fakeredis, so CI needs no containers and stays inside the free minutes.
+        env:
+          OBS_ENVIRONMENT: test
+        run: pytest --cov --cov-report=term-missing --cov-report=xml
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage.xml
+          if-no-files-found: ignore
+
+  integration:
+    name: Integration + end-to-end (real Postgres and Redis)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A suite that only ever runs on a laptop is not a suite. These tests are
+    # opt-in locally so `pytest` stays a sub-minute job, but opting in has to
+    # happen *somewhere* automatic -- otherwise the whole class of bug they
+    # exist to catch (real ON CONFLICT, real XCLAIM, JSONB, percentile_cont,
+    # actual concurrency, worker processes started from the command line) goes
+    # unchecked on every push. GitHub's service containers are free.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: obs
+          POSTGRES_PASSWORD: obs
+          POSTGRES_DB: obs
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U obs"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: packages/obs-platform/requirements-dev.txt
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packages/obs-platform/requirements-dev.txt
+          pip install --no-deps -e packages/obs-sdk -e packages/obs-platform
+
+      - name: Integration tests
+        env:
+          OBS_INTEGRATION: "1"
+          OBS_ENVIRONMENT: test
+          OBS_TEST_DATABASE_URL: postgresql+asyncpg://obs:obs@localhost:5432/obs
+          OBS_TEST_REDIS_URL: redis://localhost:6379/1
+        run: pytest -m integration -p no:cacheprovider
+
+      - name: End-to-end tests
+        # Spawns the real obs-worker and uvicorn commands, migrates a cold
+        # database, and talks to the API over HTTP. Slow by nature; still worth
+        # a job of its own, because nothing else proves a worker process picks
+        # up what a *different* process published.
+        env:
+          OBS_E2E: "1"
+          OBS_TEST_DATABASE_URL: postgresql+asyncpg://obs:obs@localhost:5432/obs
+          OBS_TEST_E2E_REDIS_URL: redis://localhost:6379/3
+        run: pytest -m e2e -p no:cacheprovider
+
+      - name: Child process logs on failure
+        if: failure()
+        run: |
+          for log in "${TMPDIR:-/tmp}"/obs-e2e-*.log; do
+            [ -e "$log" ] || continue
+            echo "::group::$log"
+            tail -c 20000 "$log"
+            echo "::endgroup::"
+          done
+
+  audit-python:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.9.0
+
+      # pip-audit queries the PyPI Advisory Database. No account, no API key, no
+      # paywalled subset -- unlike Safety CLI, which now requires a login and
+      # gates its full database behind a paid plan.
+      - name: Audit runtime dependencies
+        run: pip-audit --strict --requirement packages/obs-platform/requirements.txt
+
+      - name: Audit the SDK's dependency surface
+        run: pip-audit --strict --requirement packages/obs-sdk/requirements.txt
+
+  audit-node:
+    name: npm audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/dashboard
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/dashboard/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+        env:
+          NEXT_PUBLIC_OBS_API_URL: http://localhost:8000
+
+      # Built into npm, free, no account. Fails the job on a high or critical
+      # advisory; moderate and below are reported but do not block.
+      - name: npm audit
+        run: npm audit --audit-level=high
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build platform image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/obs-platform/Dockerfile
+          push: false
+          load: true
+          tags: obs-platform:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-test the image
+        run: |
+          docker run --rm -e OBS_ENVIRONMENT=local obs-platform:ci \
+            python -c "import obs_platform, obs_sdk; print('import ok', obs_platform.__version__, obs_sdk.__version__)"

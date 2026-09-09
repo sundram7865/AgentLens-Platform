@@ -1,0 +1,16 @@
+# Normalise to LF in the repository.
+* text=auto eol=lf
+
+# These MUST be LF regardless of platform. A shell script committed with CRLF
+# fails inside a Linux container with a confusing "bad interpreter" error, and
+# the Dockerfile's ENTRYPOINT then never runs.
+*.sh            text eol=lf
+Dockerfile      text eol=lf
+*.dockerfile    text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# Never touched
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary

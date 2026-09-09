@@ -1,0 +1,139 @@
+# Local stack, shaped like production.
+#
+# Postgres 16 stands in for Neon, Redis 7 for Upstash -- same major versions as
+# the managed services, so "works locally" means something. The API and the
+# worker run the SAME image with different commands, which is exactly how they
+# are deployed.
+#
+#   cp .env.example .env && docker compose up
+#
+# Optional profiles:
+#   docker compose --profile dashboard up   # + Next.js dashboard
+#   docker compose --profile keycloak up    # + Keycloak, for the OIDC path
+
+name: obs-platform
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: obs
+      POSTGRES_PASSWORD: obs
+      POSTGRES_DB: obs
+    ports:
+      - "${OBS_POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U obs -d obs"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    # appendonly matches Upstash's durability model closely enough that a
+    # restart mid-test does not silently vaporise the stream.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    ports:
+      - "${OBS_REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  api:
+    build:
+      context: .
+      dockerfile: packages/obs-platform/Dockerfile
+    command: ["api"]
+    environment:
+      OBS_ENVIRONMENT: local
+      OBS_DATABASE_URL: postgresql+asyncpg://obs:obs@postgres:5432/obs
+      # Locally there is no pooler, so direct and pooled are the same host.
+      # In production these MUST differ: see docs/DEPLOY.md.
+      OBS_DATABASE_DIRECT_URL: postgresql://obs:obs@postgres:5432/obs
+      OBS_REDIS_URL: redis://redis:6379/0
+      OBS_LOG_JSON: "true"
+      OBS_RUN_MIGRATIONS: "true"
+      OBS_EMBED_WORKERS_IN_API: "false"
+      OBS_BOOTSTRAP_ADMIN_EMAIL: ${OBS_BOOTSTRAP_ADMIN_EMAIL:-admin@example.com}
+      OBS_BOOTSTRAP_ADMIN_PASSWORD: ${OBS_BOOTSTRAP_ADMIN_PASSWORD:-admin12345}
+      OBS_JWT_SECRET: ${OBS_JWT_SECRET:-dev-only-insecure-secret-change-me}
+      OBS_CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    ports:
+      - "${OBS_API_PORT:-8000}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: packages/obs-platform/Dockerfile
+    command: ["worker", "--roles", "storage,guardrail,eval,scheduler"]
+    environment:
+      OBS_ENVIRONMENT: local
+      OBS_DATABASE_URL: postgresql+asyncpg://obs:obs@postgres:5432/obs
+      OBS_REDIS_URL: redis://redis:6379/0
+      OBS_LOG_JSON: "true"
+      # The API owns migrations. Two processes racing `alembic upgrade` on boot
+      # is a deadlock waiting for a slow day.
+      OBS_RUN_MIGRATIONS: "false"
+      OBS_EVAL_PROVIDER: ${OBS_EVAL_PROVIDER:-none}
+      OBS_EVAL_API_KEY: ${OBS_EVAL_API_KEY:-}
+    depends_on:
+      api:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # SIGTERM is what compose sends on `down`/restart, and what the worker's
+    # graceful shutdown is built around. 30s is comfortably above the time it
+    # takes to finish an in-flight batch.
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  dashboard:
+    profiles: ["dashboard", "all"]
+    build:
+      context: ./apps/dashboard
+      dockerfile: Dockerfile
+    environment:
+      # Server components talk to the API over the compose network...
+      OBS_API_URL: http://api:8000
+      # ...the browser talks to it through the published port.
+      NEXT_PUBLIC_OBS_API_URL: http://localhost:${OBS_API_PORT:-8000}
+    ports:
+      - "${OBS_DASHBOARD_PORT:-3000}:3000"
+    depends_on:
+      api:
+        condition: service_started
+    restart: unless-stopped
+
+  keycloak:
+    profiles: ["keycloak", "all"]
+    image: quay.io/keycloak/keycloak:26.0
+    command: ["start-dev", "--http-port=8080"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "${OBS_KEYCLOAK_PORT:-8080}:8080"
+    # Not part of the default stack on purpose: Keycloak alone wants more memory
+    # than the entire free-tier deploy target has. The platform's own JWT auth is
+    # the default; this profile exists to exercise the OIDC path.
+
+volumes:
+  postgres_data:
+  redis_data:
