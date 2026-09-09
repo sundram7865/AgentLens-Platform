@@ -1,0 +1,113 @@
+# Render blueprint. `render.com/deploy` reads this file.
+#
+# ONE web service, not two. Render's free tier has no background-worker service
+# type -- only web services -- so the consumers run inside the API process via
+# OBS_EMBED_WORKERS_IN_API. That is the same code path the standalone worker
+# uses (same supervisor, same graceful shutdown); only the process boundary
+# differs. On a paid plan, flip the flag to false and uncomment the worker
+# service below to separate them, with no code change.
+#
+# Postgres is Neon and Redis is Upstash: both have permanent free tiers, and
+# Render's own free Postgres expires after 30 days, which is not a database you
+# want a portfolio demo to depend on.
+
+services:
+  - type: web
+    name: obs-platform-api
+    runtime: docker
+    plan: free
+    region: oregon
+    dockerfilePath: ./packages/obs-platform/Dockerfile
+    dockerContext: .
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      - key: OBS_ENVIRONMENT
+        value: production
+
+      # ---- set these in the Render dashboard, never in this file ----
+      # Neon POOLED string (host contains "-pooler"). API + workers.
+      - key: OBS_DATABASE_URL
+        sync: false
+      # Neon DIRECT string (same host WITHOUT "-pooler"). Alembic only.
+      # Omitting this makes migrations run through PgBouncer, where the
+      # advisory lock Alembic takes can be stranded and hang the deploy.
+      - key: OBS_DATABASE_DIRECT_URL
+        sync: false
+      # Upstash: rediss://default:<password>@<name>.upstash.io:6379
+      - key: OBS_REDIS_URL
+        sync: false
+
+      - key: OBS_JWT_SECRET
+        generateValue: true # Render generates and stores it; never in git
+      - key: OBS_BOOTSTRAP_ADMIN_EMAIL
+        sync: false
+      - key: OBS_BOOTSTRAP_ADMIN_PASSWORD
+        sync: false
+
+      # Comma-separated Vercel origin(s) for the dashboard.
+      - key: OBS_CORS_ORIGINS
+        sync: false
+
+      # ---- free-tier shaping ----
+      - key: OBS_EMBED_WORKERS_IN_API
+        value: "true"
+      - key: OBS_WORKER_ROLES
+        value: storage,guardrail,eval,scheduler
+      - key: OBS_RUN_MIGRATIONS
+        value: "true"
+      - key: OBS_WEB_CONCURRENCY
+        value: "1" # 512 MB total; a second uvicorn worker doubles the baseline
+
+      # Upstash free tier is 10,000 commands/day. A 5s blocking read is ~17k
+      # commands/day per consumer group at idle, so the block is stretched to
+      # 30s: ~2,880/day for all three groups combined, leaving headroom for the
+      # actual writes. Latency cost is up to 30s on an idle stream, which for a
+      # portfolio demo is invisible -- traffic wakes it immediately.
+      - key: OBS_CONSUMER_BLOCK_MS
+        value: "30000"
+      - key: OBS_CONSUMER_BATCH_SIZE
+        value: "200"
+      - key: OBS_STREAM_MAXLEN
+        value: "50000"
+
+      # Neon free tier: 0.5 GB. 30 days of demo traffic is far under that, and
+      # the retention job keeps it that way.
+      - key: OBS_RETENTION_DAYS
+        value: "30"
+      - key: OBS_DB_POOL_SIZE
+        value: "3"
+      - key: OBS_DB_MAX_OVERFLOW
+        value: "2"
+
+      # Evaluation defaults to the free heuristic backend. Set OBS_EVAL_PROVIDER
+      # and OBS_EVAL_API_KEY to switch on the LLM judge; the per-tenant budget
+      # cap below is what keeps that from becoming a surprise invoice.
+      - key: OBS_EVAL_PROVIDER
+        value: none
+      - key: OBS_EVAL_SAMPLE_RATE
+        value: "5"
+      - key: OBS_BUDGET_DAILY_USD_PER_TENANT
+        value: "0.50"
+
+      - key: OBS_LOG_JSON
+        value: "true"
+      - key: OBS_DOCS_ENABLED
+        value: "false" # do not publish the OpenAPI schema of a data API
+
+  # ---------------------------------------------------------------------------
+  # Paid-plan shape: separate the consumers from the API.
+  # Set OBS_EMBED_WORKERS_IN_API=false above and uncomment this.
+  # ---------------------------------------------------------------------------
+  # - type: worker
+  #   name: obs-platform-worker
+  #   runtime: docker
+  #   plan: starter
+  #   dockerfilePath: ./packages/obs-platform/Dockerfile
+  #   dockerContext: .
+  #   dockerCommand: worker --roles storage,guardrail,eval,scheduler
+  #   envVars:
+  #     - fromGroup: obs-platform-shared
+  #     - key: OBS_RUN_MIGRATIONS
+  #       value: "false"   # the API owns migrations; two racing is a deadlock
