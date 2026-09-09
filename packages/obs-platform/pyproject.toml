@@ -1,0 +1,65 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obs-platform"
+version = "1.0.0"
+description = "AI Observability & Guardrails Platform - API, stream consumers, scheduled jobs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+# obs-sdk is deliberately absent: it is a workspace package installed from the
+# local path (`pip install --no-deps -e packages/obs-sdk`). Listing it would
+# send pip looking for a name that does not exist on PyPI.
+dependencies = [
+  "fastapi>=0.141,<0.143",
+  "uvicorn[standard]>=0.34,<0.36",
+  "pydantic>=2.7,<3",
+  "pydantic-settings>=2.6,<3",
+  "sqlalchemy[asyncio]>=2.0.36,<2.1",
+  "alembic>=1.14,<2",
+  "asyncpg>=0.30,<0.32",
+  "psycopg[binary]>=3.2,<4",     # sync driver, used only by Alembic
+  "redis>=5.2,<7",
+  "structlog>=24.4,<27",
+  "PyJWT[crypto]>=2.13,<3",
+  "argon2-cffi>=23.1,<26",
+  "python-multipart>=0.0.32,<0.1",
+  "httpx>=0.27,<0.29",
+  "anthropic>=1.4,<2",
+]
+
+[project.optional-dependencies]
+# Heavier, strictly optional detectors. The platform ships working fallbacks for
+# both, so a 512 MB free-tier box can run the whole thing without these.
+#   pip install -e "packages/obs-platform[presidio]"   # or [embeddings], [ragas]
+presidio = ["presidio-analyzer>=2.2,<3", "presidio-anonymizer>=2.2,<3", "spacy>=3.7,<4"]
+embeddings = ["sentence-transformers>=3.0,<6"]
+# Pinned exactly, not ranged, unlike everything else here. RAGAS has moved its
+# metric API twice (the `ragas.metrics` classes this code deliberately avoids are
+# deprecated), so a range would silently resolve to a release whose
+# `ragas.metrics.collections` no longer exports what RagasJudge imports. 0.4.3 is
+# the version that import was checked against.
+ragas = ["ragas==0.4.3"]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.24,<0.26",
+  "pytest-cov>=6.0,<8",
+  "fakeredis>=2.26,<3",
+  "aiosqlite>=0.20,<0.23",
+  "ruff>=0.8,<0.14",
+  "mypy>=1.13,<2",
+  "pip-audit>=2.7,<3",
+]
+
+[project.scripts]
+obs-worker = "obs_platform.workers.cli:main"
+obs-admin = "obs_platform.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+obs_platform = ["py.typed", "guardrails/data/*.txt", "guardrails/data/*.json"]

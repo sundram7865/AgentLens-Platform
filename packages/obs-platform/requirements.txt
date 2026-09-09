@@ -1,0 +1,32 @@
+# Runtime dependencies, pinned exactly.
+#
+# Pinned, not ranged, on purpose: this project's whole premise is catching
+# behaviour changes, and an unpinned transitive upgrade is a behaviour change
+# nobody reviewed. `pip-audit` runs in CI against this file, so a pinned CVE
+# gets found here rather than in production.
+#
+# obs-sdk is NOT listed. It lives in this repository and is installed from the
+# workspace path (`pip install --no-deps -e packages/obs-sdk`); listing it here
+# would send pip looking for it on PyPI.
+
+fastapi==0.141.1
+uvicorn[standard]==0.34.0
+python-multipart==0.0.32
+
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+SQLAlchemy==2.0.36
+alembic==1.14.0
+asyncpg==0.31.0
+psycopg[binary]==3.2.3
+
+redis==5.2.1
+structlog==26.1.0
+PyJWT[crypto]==2.13.0
+argon2-cffi==25.1.0
+httpx==0.28.1
+
+# Judge provider for the eval scorer. Optional at runtime (OBS_EVAL_PROVIDER=none
+# needs no key and no network), pinned here so the default path works out of the box.
+anthropic==1.4.0
