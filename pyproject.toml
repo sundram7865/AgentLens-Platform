@@ -1,0 +1,68 @@
+# Workspace root: tooling configuration only.
+# The two installable Python packages live under packages/.
+[project]
+name = "obs-workspace"
+version = "1.0.0"
+description = "AI Observability & Guardrails Platform - workspace root"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-q --strict-markers --strict-config"
+testpaths = ["packages/obs-platform/tests"]
+pythonpath = ["packages/obs-sdk/src", "packages/obs-platform/src"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "integration: needs real Redis/Postgres (skipped unless OBS_INTEGRATION=1)",
+  "e2e: spawns real worker/API processes (skipped unless OBS_E2E=1)",
+  "slow: takes more than a second",
+]
+filterwarnings = [
+  "ignore:datetime.datetime.utcnow:DeprecationWarning",
+  # aiosqlite's worker thread can outlive the per-test event loop and log a
+  # "Event loop is closed" on teardown. It happens strictly after the assertions
+  # and only with the SQLite test driver -- production uses asyncpg. Ignoring it
+  # keeps a real failure visible instead of buried in known noise.
+  "ignore::pytest.PytestUnhandledThreadExceptionWarning",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["packages/obs-sdk/src", "packages/obs-platform/src"]
+extend-exclude = ["packages/obs-platform/migrations/versions", "apps/dashboard"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "ASYNC", "T20", "RUF"]
+ignore = [
+  "B008",   # Depends() in a default arg is the documented FastAPI idiom
+  "E501",   # line length is the formatter's job
+  "RUF012", # ClassVar annotations on SQLAlchemy/pydantic class attrs are noise
+]
+
+[tool.ruff.lint.per-file-ignores]
+"packages/obs-platform/tests/*" = ["T20", "B011", "E402"]
+"scripts/*" = ["T20"]
+"loadtest/*" = ["T20"]
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "packages/obs-sdk/src:packages/obs-platform/src"
+packages = ["obs_sdk", "obs_platform"]
+ignore_missing_imports = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+disable_error_code = ["misc", "no-any-return"]
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+ignore_errors = true
+
+[tool.coverage.run]
+source = ["packages/obs-sdk/src", "packages/obs-platform/src"]
+omit = ["*/migrations/*", "*/tests/*"]
+
+[tool.coverage.report]
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:", "raise NotImplementedError"]

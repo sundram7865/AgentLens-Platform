@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Env / secrets  --  .env.example IS committed, .env is never committed
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.vercel/
+next-env.d.ts
+*.tsbuildinfo
+
+# Local data / artifacts
+*.sqlite3
+*.db
+backups/
+loadtest/results/
+.obs-cache/
+.DS_Store
+Thumbs.db
