@@ -1,0 +1,28 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "installCommand": "npm ci",
+  "regions": ["iad1"],
+  "//env": [
+    "OBS_API_URL is read only by server components and route handlers, so it is",
+    "NOT prefixed with NEXT_PUBLIC_ and never reaches the browser. The browser",
+    "never calls the API directly -- that is what keeps the session token in an",
+    "httpOnly cookie the client cannot read.",
+    "Set it in the Vercel dashboard to your Render URL."
+  ],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "X-Frame-Options", "value": "DENY" },
+        { "key": "Referrer-Policy", "value": "no-referrer" },
+        {
+          "key": "Strict-Transport-Security",
+          "value": "max-age=63072000; includeSubDomains"
+        }
+      ]
+    }
+  ]
+}

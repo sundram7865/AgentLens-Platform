@@ -1,0 +1,76 @@
+@import "tailwindcss";
+
+/*
+ * A dark, dense operator console. The reference points are Grafana and Sentry,
+ * not a marketing page: an operator scanning for the one flagged trace among
+ * two hundred needs contrast and density, not whitespace.
+ *
+ * Semantic tokens rather than raw palette values at the call site, so "what
+ * colour is an error" has one answer.
+ */
+@theme {
+  --color-canvas: #0b0e14;
+  --color-surface: #12161f;
+  --color-surface-2: #171d28;
+  --color-border: #232b3a;
+  --color-border-strong: #2f3a4d;
+
+  --color-ink: #e6edf7;
+  --color-ink-muted: #93a1b8;
+  --color-ink-faint: #64748b;
+
+  --color-accent: #5b9cff;
+  --color-accent-dim: #1e3a67;
+
+  --color-ok: #34d399;
+  --color-warn: #fbbf24;
+  --color-danger: #f87171;
+  --color-critical: #fb7185;
+  --color-info: #60a5fa;
+
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html,
+body {
+  background: var(--color-canvas);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-feature-settings: "tnum" 1; /* tabular numerals keep metric columns aligned */
+}
+
+/* Scrollbars that do not scream in a dark UI. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-canvas);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d4a60;
+}
+
+@keyframes pulse-subtle {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.animate-pulse-subtle {
+  animation: pulse-subtle 1.6s ease-in-out infinite;
+}

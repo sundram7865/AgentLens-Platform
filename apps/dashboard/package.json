@@ -1,0 +1,51 @@
+{
+  "name": "obs-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Read-only dashboard for the AI Observability & Guardrails Platform",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit"
+  },
+  "//dependencies": [
+    "Deliberately minimal. Every chart in this dashboard is hand-written SVG.",
+    "A charting library would add ~200 KB to the bundle and a dozen transitive",
+    "packages to `npm audit` for three charts, none of which need interaction",
+    "beyond a tooltip. Tailwind v4 needs no config file and no PostCSS plugins",
+    "beyond its own."
+  ],
+  "dependencies": {
+    "next": "15.5.25",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.1.14",
+    "@types/node": "22.18.6",
+    "@types/react": "19.1.13",
+    "@types/react-dom": "19.1.9",
+    "eslint": "9.36.0",
+    "eslint-config-next": "15.5.25",
+    "tailwindcss": "4.1.14",
+    "typescript": "5.9.2"
+  },
+  "engines": {
+    "node": ">=20.9"
+  },
+  "//overrides": [
+    "next bundles its own postcss and sharp, both of which lag behind advisory",
+    "fixes. npm's suggested remedy is a major-version jump to Next 16; forcing",
+    "the patched transitives is the smaller, reversible change and closes the",
+    "same advisories. Revisit when Next ships releases carrying these itself.",
+    "sharp is only used by next/image, which this dashboard does not use -- but",
+    "an unused dependency with a known CVE still ships in the image, so it is",
+    "pinned rather than argued away."
+  ],
+  "overrides": {
+    "postcss": "^8.5.28",
+    "sharp": "^0.35.4"
+  }
+}
