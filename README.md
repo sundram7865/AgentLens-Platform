@@ -204,5 +204,3 @@ otherwise.
 ## Licence
 
 MIT.
-#   O B S _ P L A T F O R M  
- 
