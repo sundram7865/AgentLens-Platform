@@ -1,0 +1,8 @@
+# Pinned dependency surface for the client SDK.
+#
+# This file exists so `pip-audit` can scan exactly what SupportPilot inherits by
+# importing obs-sdk. Keeping that list to two packages is the point: an
+# observability client that drags in a web framework and an ML stack is a
+# supply-chain liability for the app it is supposed to be watching.
+pydantic==2.10.4
+redis==5.2.1

@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obs-sdk"
+version = "1.0.0"
+description = "Client SDK for the AI Observability & Guardrails Platform. Emits agent trace events to Redis Streams."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "OBS Platform" }]
+keywords = ["observability", "llm", "langchain", "langgraph", "guardrails", "tracing"]
+
+# Deliberately tiny. SupportPilot imports this package; it must not inherit the
+# platform's dependency tree (no sqlalchemy, no fastapi, no spaCy, no ML stack).
+dependencies = [
+  "pydantic>=2.7,<3",
+  "redis>=5.0,<7",
+]
+
+[project.optional-dependencies]
+# Only needed if you use ObservabilityCallbackHandler with real LangChain.
+# The handler itself works without it (see obs_sdk/langchain.py).
+langchain = ["langchain-core>=0.2,<1"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+obs_sdk = ["py.typed"]
