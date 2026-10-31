@@ -18,7 +18,7 @@
     "beyond its own."
   ],
   "dependencies": {
-    "next": "15.5.25",
+    "next": "15.5.28",
     "react": "19.1.1",
     "react-dom": "19.1.1"
   },
@@ -28,7 +28,7 @@
     "@types/react": "19.1.13",
     "@types/react-dom": "19.1.9",
     "eslint": "9.36.0",
-    "eslint-config-next": "15.5.25",
+    "eslint-config-next": "15.5.28",
     "tailwindcss": "4.1.14",
     "typescript": "5.9.2"
   },
@@ -46,6 +46,9 @@
   ],
   "overrides": {
     "postcss": "^8.5.28",
-    "sharp": "^0.35.4"
+    "sharp": "^0.35.5",
+    "source-map-js": "^1.2.2",
+    "brace-expansion@^1": "^1.1.21",
+    "brace-expansion@^5": "^5.0.12"
   }
 }

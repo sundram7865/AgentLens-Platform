@@ -1,4 +1,4 @@
-# `npm run build` in apps/dashboard, Next.js 15.5.25, 2026-10-31.
+# `npm run build` in apps/dashboard, Next.js 15.5.28 (re-run after the security upgrade from 15.5.25; sizes unchanged), 2026-11-01.
 # "Size" is the route's own JS; "First Load JS" is what a browser downloads.
 
 Route (app)                                 Size  First Load JS

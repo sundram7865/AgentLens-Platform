@@ -277,6 +277,17 @@ Neither of these was visible in review:
   group*, and the reclaim loop's `XPENDING` doubles it to 17,280 -- over the
   10,000 free tier for a service that never sleeps. Measured, then fixed with a
   longer reclaim interval (`docs/DEPLOY.md`, `docs/evidence/redis_idle_commands.txt`).
+* **The audit jobs went red with no code change.** Between the September commit
+  and this one, advisories were published against the exact pins: 16 for PyJWT
+  2.13.0 (fixed by 2.15.1), a critical remote-code-execution in Next.js's image
+  optimiser plus cache-poisoning and DoS issues (15.5.25 → 15.5.28), and high
+  ones in `sharp`, `source-map-js` and ESLint's `brace-expansion`. One PyJWT
+  advisory is worth reading closely -- `decode()` mutating a *reused* options
+  dict silently disables claim checks -- and it is not exploitable here, because
+  `tokens.py` passes a fresh dict literal on every call. Upgraded anyway; the
+  pyproject floor moved to 2.15.1 so a range install cannot pick a vulnerable
+  version. The lesson is the one the audit jobs exist for: green last month says
+  nothing about today.
 * **Numbers that did not survive re-measurement.** The PII engines measure 39 MB
   (built-in) and 163 MB (Presidio), not 59 and 154; the injection corpus has 39
   signatures, not 40; "173 B of JS per page" is the route's own chunk, while a
