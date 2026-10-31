@@ -3,8 +3,16 @@
 Trace identity lives in :mod:`contextvars`, never a module global and never
 ``threading.local``. Under an async server one OS thread interleaves many
 requests; a thread-local would hand request B the trace id of request A and
-silently braid two customers' traces together. A ContextVar is copied into each
-task and each thread started from it, so concurrent requests stay isolated.
+silently braid two customers' traces together. Each asyncio task gets a copy of
+the context it was created in, so concurrent requests stay isolated.
+
+Threads do **not** inherit it. ``threading.Thread`` and ``ThreadPoolExecutor``
+start with an empty context, so a span opened on a worker thread does not see
+the trace its submitter opened. Either run the target under
+``contextvars.copy_context().run``, or pass the trace id across as data -- the
+SupportPilot integration derives it from ``agent_run_id`` for exactly this
+reason, because its agent graph runs on an executor thread or in a spawned
+process.
 
 The LangChain handler does not *depend* on this: it resolves trace identity from
 LangChain's own ``run_id``/``parent_run_id`` lineage, which is correct however

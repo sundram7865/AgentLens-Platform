@@ -46,8 +46,22 @@ DEFAULT_PRICES: dict[str, ModelPrice] = {
     "claude-sonnet-5": ModelPrice(2.00, 10.00),
     "claude-sonnet-4-6": ModelPrice(3.00, 15.00),
     "claude-haiku-4-5": ModelPrice(1.00, 5.00),
-    # -- Other providers: reasonable defaults, NOT authoritative. Check your
-    #    provider's current pricing and override via OBS_PRICING_JSON.
+    # -- Google: SupportPilot's model chain (app/core/config.py,
+    #    gemini_model + gemini_fallback_models). Paid-tier Standard text prices
+    #    from https://ai.google.dev/gemini-api/docs/pricing, page "Last updated
+    #    2026-10-30 UTC". The 3.6/3.8 Flash prices are listed as doubling on
+    #    2027-01-01 ($1.50 / $7.50): update these then, or set OBS_PRICING_JSON.
+    #    gemini-3.5-flash and gemini-3.7-flash are in SupportPilot's chain but
+    #    not on that page, so they are deliberately absent -- unpriced models
+    #    show up in /health/meta's unknown_models instead of as $0.
+    "gemini-3.8-flash": ModelPrice(0.75, 3.75),
+    "gemini-3.6-flash": ModelPrice(0.75, 3.75),
+    "gemini-3.5-flash-lite": ModelPrice(0.30, 2.50),
+    "gemini-3.1-flash-lite": ModelPrice(0.25, 1.50),
+    "gemini-2.5-flash": ModelPrice(0.30, 2.50),
+    "gemini-2.5-flash-lite": ModelPrice(0.10, 0.40),
+    # -- Other providers: reasonable defaults, NOT authoritative and no longer
+    #    on their providers' current price pages. Override via OBS_PRICING_JSON.
     "gemini-2.0-flash": ModelPrice(0.10, 0.40),
     "gemini-1.5-flash": ModelPrice(0.075, 0.30),
     "gemini-1.5-pro": ModelPrice(1.25, 5.00),

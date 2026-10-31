@@ -172,6 +172,11 @@ class Tracer:
 
         The ``trace.end`` event is emitted from a ``finally``: a request that
         raises is exactly the request you most need to see in the dashboard.
+
+        Set ``ctx.attributes["__output__"]`` before the block ends to report the
+        result, and ``ctx.attributes["__input__"]`` to report an input that was
+        only known once the work finished -- an agent that loads its own ticket
+        knows the question after the trace has started, not before.
         """
         ctx = TraceContext(
             trace_id=trace_id or new_trace_id(),
@@ -219,6 +224,7 @@ class Tracer:
                     status=status,
                     ended_at=utcnow(),
                     latency_ms=max(0, int((time.perf_counter() - started) * 1000)),
+                    input=self._payload(ctx.attributes.get("__input__")),
                     output=self._payload(ctx.attributes.get("__output__")),
                     error=err,
                     attributes={k: v for k, v in ctx.attributes.items() if not k.startswith("__")},
@@ -245,10 +251,15 @@ class Tracer:
         ctx = get_trace_context()
         resolved_trace = trace_id or (ctx.trace_id if ctx else new_trace_id())
         resolved_tenant = tenant_id or (ctx.tenant_id if ctx else self.tenant_id)
+        # The open span is only a valid parent if it belongs to the same trace.
+        # A span pinned to another trace (an approval attached to the run that
+        # requested it, from inside an unrelated HTTP request) would otherwise
+        # point at a parent that does not exist in its own trace tree.
+        same_trace = ctx is not None and ctx.trace_id == resolved_trace
         handle = SpanHandle(
             trace_id=resolved_trace,
             span_id=new_span_id(),
-            parent_span_id=current_span_id(),
+            parent_span_id=current_span_id() if same_trace or trace_id is None else None,
             name=name,
             kind=SpanKind(kind),
         )
@@ -259,6 +270,15 @@ class Tracer:
 
         self._emit(self._span_event(handle, EventType.SPAN_START, resolved_tenant, ctx))
         span_token = set_current_span_id(handle.span_id)
+        # A span opened outside any trace context becomes the context for what
+        # it contains. Without this, each nested span minted its own trace id
+        # while still naming the outer span as parent: one request, split
+        # across traces, with parents that resolve in neither.
+        ctx_token = (
+            set_trace_context(TraceContext(trace_id=resolved_trace, tenant_id=resolved_tenant))
+            if not same_trace
+            else None
+        )
         try:
             yield handle
             if handle.status is SpanStatus.RUNNING:
@@ -267,6 +287,8 @@ class Tracer:
             handle.set_error(exc)
             raise
         finally:
+            if ctx_token is not None:
+                reset_trace_context(ctx_token)
             reset_current_span_id(span_token)
             handle._ended = True
             self._emit(self._span_event(handle, EventType.SPAN_END, resolved_tenant, ctx))

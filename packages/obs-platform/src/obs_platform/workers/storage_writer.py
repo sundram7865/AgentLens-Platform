@@ -342,7 +342,11 @@ def _merge_trace(
         if event.attributes:
             row["attributes"].update(event.attributes)
 
-        if event.type is EventType.TRACE_START and event.input:
+        if is_trace_event and event.input:
+            # The envelope's input is authoritative, whichever end carries it.
+            # An agent that loads its own ticket only knows the question when
+            # the run finishes, so it arrives on trace.end -- after the step
+            # spans below have already filled the row with a step's input.
             row["input"] = event.input
         elif not row["input"] and event.input:
             # No trace envelope yet: the first span carrying an input is the
