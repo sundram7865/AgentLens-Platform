@@ -1,0 +1,16 @@
+# Idle Redis command rate of the worker, from `redis-cli INFO commandstats`,
+# sampled twice 120 s apart with no traffic. 2026-10-31, local docker compose stack,
+# worker running storage,guardrail,eval,scheduler with defaults
+# (OBS_CONSUMER_BLOCK_MS=5000, OBS_CONSUMER_CLAIM_INTERVAL_SECONDS=30).
+
+cmdstat_xreadgroup            69 in 120s  ->   49680/day
+cmdstat_xpending              12 in 120s  ->    8640/day
+cmdstat_ping                  24 in 120s  ->   17280/day   (compose's own redis healthcheck, every 5 s; not the app)
+
+# Model: per consumer group, one XREADGROUP per block and one XPENDING per reclaim
+# interval. 3 groups x (120 / 5) = 72 XREADGROUP and 3 x (120 / 30) = 12 XPENDING
+# predicted; 69 and 12 measured (the blocking reads return a little late under load).
+#
+# Applied to render.yaml (30 s block, 300 s reclaim): 8,640 + 864 = 9,504/day at idle.
+# With the old render.yaml (30 s block, 30 s reclaim default): 8,640 + 8,640 = 17,280/day,
+# over Upstash's 10,000/day free tier for a service that never sleeps.

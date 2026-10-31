@@ -1,0 +1,20 @@
+# All three test layers, run 2026-11-01 on the machine described in README.md of this folder.
+# Integration and e2e ran against the docker compose Postgres 16 and Redis 7, in the obs_test database.
+
+$ python -m pytest
+304 passed, 38 skipped, 1 warning in 74.42s (0:01:14)
+
+$ OBS_INTEGRATION=1 OBS_ENVIRONMENT=test python -m pytest -m integration
+25 passed, 317 deselected in 49.21s
+
+$ OBS_E2E=1 python -m pytest -m e2e -p no:cacheprovider
+11 passed, 331 deselected in 99.40s (0:01:39)
+
+$ python -m pytest --collect-only
+342 tests collected in 2.26s
+
+# 342 = 304 unit + 25 integration + 11 e2e + 2 fork-safety tests. The fork tests need os.fork(),
+# so they skip on Windows (they are 2 of the 38 "skipped" above) and run in CI on Linux. They
+# were also run in a Linux container against the old and new publisher:
+#   old publisher (git HEAD before the fix): 2 failed in 7.13s   (child deadlocked until SIGALRM)
+#   new publisher:                           2 passed in 0.54s

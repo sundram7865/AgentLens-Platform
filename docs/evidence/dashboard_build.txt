@@ -1,0 +1,18 @@
+# `npm run build` in apps/dashboard, Next.js 15.5.25, 2026-10-31.
+# "Size" is the route's own JS; "First Load JS" is what a browser downloads.
+
+Route (app)                                 Size  First Load JS
+┌ ƒ /                                      173 B         106 kB
+├ ○ /_not-found                            990 B         104 kB
+├ ƒ /alerts                                173 B         106 kB
+├ ○ /login                                1.2 kB         104 kB
+├ ƒ /traces                                173 B         106 kB
+└ ƒ /traces/[traceId]                      173 B         106 kB
++ First Load JS shared by all             103 kB
+  ├ chunks/255-37e0f0325134c4d7.js       46.4 kB
+  ├ chunks/4bd1b696-c023c6e3521b1417.js  54.2 kB
+  └ other shared chunks (total)          1.97 kB
+
+
+○  (Static)   prerendered as static content
+ƒ  (Dynamic)  server-rendered on demand

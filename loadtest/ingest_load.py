@@ -29,6 +29,7 @@ import argparse
 import asyncio
 import json
 import os
+import platform
 import statistics
 import sys
 import time
@@ -73,6 +74,10 @@ class Report:
     dropped: int = 0
     rows_before: int = 0
     rows_after: int = 0
+    #: Spans the run should have produced (traces x spans per trace).
+    expected_spans: int = 0
+    #: Mean size of one encoded event on the wire, in bytes.
+    event_bytes: float = 0.0
     #: Seconds for each consumer group to reach zero lag AND zero pending.
     group_drain_seconds: dict[str, float] = field(default_factory=dict)
 
@@ -105,17 +110,32 @@ class Report:
             "drain_seconds": round(self.drain_seconds, 2),
             "group_drain_seconds": {k: round(v, 2) for k, v in self.group_drain_seconds.items()},
             "peak_consumer_lag": peak_lag,
+            "spans_expected": self.expected_spans,
             "spans_written": rows,
-            # Throughput of the DURABLE WRITE PATH only. Dividing by the overall
-            # drain would fold in the eval scorer's deliberate batch interval --
-            # it holds messages unacked on purpose while it fills a batch -- and
-            # report the storage writer as several times slower than it is.
-            "write_throughput_rows_per_s": round(rows / self.group_drain_seconds["obs-storage"], 1)
+            # End-to-end reconciliation: rows in Postgres against what was sent.
+            # loss_rate below only counts what the SDK itself dropped.
+            "spans_missing": self.expected_spans - rows,
+            "event_bytes_mean": round(self.event_bytes, 1),
+            # Throughput of the DURABLE WRITE PATH only, over the whole window it
+            # was writing: from the first event until obs-storage drained. The
+            # eval scorer's drain is excluded on purpose -- it holds messages
+            # unacked while it fills a batch -- and so is dividing by the drain
+            # after producers stopped alone, which an earlier version did: rows
+            # written *during* production then counted against a window that
+            # excluded production, overstating the rate.
+            "write_throughput_rows_per_s": round(
+                rows / (self.produce_seconds + self.group_drain_seconds["obs-storage"]), 1
+            )
             if self.group_drain_seconds.get("obs-storage")
             else 0.0,
             "published": self.published,
             "dropped": self.dropped,
             "loss_rate": round(self.dropped / max(1, self.published + self.dropped), 6),
+            "environment": {
+                "platform": platform.platform(),
+                "python": platform.python_version(),
+                "cpus": os.cpu_count(),
+            },
         }
 
 
@@ -275,6 +295,9 @@ async def run(args: argparse.Namespace) -> int:
     await asyncio.gather(*(one_trace(i) for i in range(args.traces)))
     report.produce_seconds = time.perf_counter() - started
     report.events = produced
+    report.expected_spans = args.traces * args.spans
+    sample_events = build_events(new_trace_id(), "tenant_0", args.spans)
+    report.event_bytes = statistics.fmean(len(e.to_json().encode()) for e in sample_events)
 
     print("flushing the SDK buffer...")
     obs.publisher.flush(timeout=60)
@@ -324,8 +347,11 @@ def render(payload: dict[str, Any], report: Report) -> None:
         note = "  <- durable write path" if name == "obs-storage" else ""
         print(f"    {name:<22}{seconds:>10.2f} s{note}")
     print(f"  peak consumer lag       {payload['peak_consumer_lag']:>10} messages")
+    print(f"  spans expected          {payload['spans_expected']:>10}")
     print(f"  spans written           {payload['spans_written']:>10}")
+    print(f"  spans missing           {payload['spans_missing']:>10}")
     print(f"  write throughput        {payload['write_throughput_rows_per_s']:>10.1f} rows/s")
+    print(f"  mean event size         {payload['event_bytes_mean']:>10.1f} bytes")
     print()
     print(f"  published               {payload['published']:>10}")
     print(f"  dropped                 {payload['dropped']:>10}")

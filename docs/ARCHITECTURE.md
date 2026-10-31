@@ -6,9 +6,10 @@
 ┌─────────────────────────────┐
 │ SupportPilot (or any agent) │
 │   obs-sdk                   │   pydantic + redis. Nothing else.
-│   ├ callback handler        │   One span per LangGraph node / LLM / tool call
-│   ├ manual tracer           │   For the tool gateway and other non-LangChain code
-│   └ buffered publisher      │   put_nowait -> bounded queue -> daemon thread
+│   ├ callback handler        │   LangChain/LangGraph apps: a span per node / LLM / tool
+│   ├ manual tracer           │   Everything else. SupportPilot uses this, hooked into
+│   │                         │   its trace_operation (it calls Gemini directly)
+│   └ buffered publisher      │   put_nowait -> bounded queue -> daemon thread, fork-safe
 └──────────────┬──────────────┘
                │ XADD obs:events MAXLEN ~ 100000
                ▼

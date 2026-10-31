@@ -1,173 +1,184 @@
 # Load test report
 
-Every number here was produced by `loadtest/ingest_load.py` against real
-Postgres 16 and Redis 7 (the `docker compose` stack), not estimated. Raw JSON
-output is in `loadtest/results/`.
+Every number here was produced by `loadtest/ingest_load.py` against the real
+`docker compose` stack (Postgres 16, Redis 7, the API and one worker running all
+four roles), not estimated. The raw output of each run is in
+[`evidence/`](evidence/), next to this file.
 
-**Environment.** Windows 11, Python 3.12.6, Docker Desktop with Postgres 16 and
-Redis 7 in Linux containers, all four consumer roles in one worker process,
-producer and consumers on the same machine. That last point matters: this is a
-single-box measurement, so it under-states network latency and over-states
-inter-process contention compared to a real Render + Neon + Upstash deployment.
+**Environment.** One Windows 11 laptop: 8 logical CPUs, 7.9 GB RAM, Python
+3.12.6, Docker Desktop with the databases in Linux containers. Producer,
+consumers and databases share the machine, and it was also running an editor
+and other containers -- free memory dropped below 200 MB during the session.
+Read every timing as "what this hardware did under contention", not as the
+design's ceiling.
 
 Reproduce:
 
 ```bash
-docker compose up -d postgres redis
-python -m obs_platform.workers.cli --roles storage,guardrail,eval,scheduler
-python loadtest/ingest_load.py --traces 1500 --spans 6 --concurrency 30 --rate 4
+docker compose up -d
+python loadtest/ingest_load.py --traces 1500 --spans 6 --concurrency 30 --rate 4   # paced
+python loadtest/ingest_load.py --traces 2000 --spans 6 --concurrency 200 --rate 0  # burst
 ```
+
+Each event is a real `ObsEvent` shaped like an agent run (a trace start, six
+spans, a trace end); the mean encoded size was **609.6 bytes**.
 
 ---
 
 ## 1. The number that matters: SDK overhead in the agent's request path
 
-This is the claim the whole project rests on: *watching SupportPilot must not
-slow SupportPilot down*. It is the wall time the agent's own thread spends
-inside `publish()`, not the end-to-end pipeline.
+The claim the whole project rests on is that *watching SupportPilot must not
+slow SupportPilot down*. This is the wall time the agent's own thread spends
+inside `publish()` -- not end-to-end delivery, which happens on a background
+thread the request never waits for.
 
-| percentile | overhead |
-|---|---|
-| p50 | **2.5 µs** |
-| p95 | **10.4 µs** |
-| p99 | **29.0 µs** |
-| max | 561 µs |
+| percentile | paced run (30 producers) | burst run (200 producers) |
+|---|---|---|
+| p50 | **2.1 µs** | 1.3 µs |
+| p95 | **9.6 µs** | 2.6 µs |
+| p99 | **44.0 µs** | 6.6 µs |
+| max | 341.5 µs | 5,971 µs |
 
-For context: a SupportPilot agent run makes several LLM calls and takes on the
-order of **1–3 seconds**. It emits ~8 events. Total observability cost to that
-request is roughly **20–80 microseconds**, or about **0.003%** of the run.
+The paced p99 moves with machine load: the same command gave 35.5 µs one run
+earlier on the same day ([`evidence/loadtest_paced_before_lock_fix.txt`](evidence/loadtest_paced_before_lock_fix.txt)),
+and an earlier session on a quieter machine measured 29 µs. Quote it as "tens of
+microseconds at p99", not as one exact figure. The burst's lower percentiles are
+the tight loop with no sleeps between publishes; its max is a GC pause or a
+scheduler hiccup on a contended machine.
 
-That number is low because `publish()` does exactly two things: build a dict and
-`put_nowait` onto a bounded queue. Every socket write happens on a daemon thread
-the request never waits for. The p99 of 29 µs is queue contention under 30
-concurrent producers; the 561 µs max is one GC pause.
+For scale: a SupportPilot agent run takes 1–3 seconds and emits roughly 8–25
+events. Even at the worst p99 above that is about a millisecond per run, well
+under 0.1% of it.
+
+`publish()` is this cheap because it does two things: build the event and
+`put_nowait` it onto a bounded queue. Every socket write happens on a daemon
+thread.
 
 ---
 
-## 2. Sustained throughput (paced, realistic)
+## 2. A paced burst, reconciled end to end
 
-1,500 traces × 8 events, 30 concurrent agent runs, paced to model real ticket
-handling rather than a synthetic flood.
+1,500 traces × 8 events = 12,000 events, 30 concurrent agent runs, paced to model
+real ticket handling rather than a synthetic flood
+([`evidence/loadtest_paced.txt`](evidence/loadtest_paced.txt)).
 
 | metric | value |
 |---|---|
-| events published | 12,000 |
-| events dropped | **0** |
-| loss rate | **0.000000** |
-| sustained ingest | 744 events/s |
-| peak consumer lag | 7,050 messages |
+| events published / dropped by the SDK | 12,000 / **0** |
+| ingest rate while producing | 785 events/s, for 15.3 s |
+| spans expected / **written to Postgres** | 9,000 / **9,000** |
+| spans missing | **0** |
+| peak consumer lag | 9,249 messages |
+| drain after producers stopped: `obs-storage` / `obs-guardrail` / `obs-eval` | 26.9 s / 26.7 s / 29.5 s |
+| durable write throughput, whole window | **213 rows/s** |
 
-Zero loss at this rate. For scale, 744 events/s is roughly **93 agent runs per
-second**, or about 8 million tickets a day, several orders of magnitude beyond
-what a portfolio deployment or a mid-size support desk produces.
+"Zero loss" here means something checkable: the harness counts span rows in
+Postgres before and after, and every one of the 9,000 spans sent arrived. An
+earlier version of this report only counted what the SDK dropped, which cannot
+see a loss inside the pipeline.
 
-## 3. Consumer drain, measured per group
+**What 785 events/s is, and is not.** It is the rate the load generator was paced
+at for 15 seconds, not a sustained ceiling. The ceiling on this machine is the
+single worker's durable path: it took 42.2 s from the first event to the storage
+group fully draining 12,000 events, so it absorbs about **285 events/s**,
+roughly 36 agent runs per second or 3 million a day. Traffic above that for long
+grows the backlog; the stream is capped at 100,000 entries (`MAXLEN ~`), so a
+backlog that outgrows the cap loses its oldest unread events. Finding the real
+limit means a producer on a separate machine, a rate stepped up until lag stops
+returning to zero, more storage replicas, and an hour-long soak -- none of which
+this report did.
 
-Combining the groups into one number would be misleading, because they are
-*supposed* to behave differently.
+The write throughput is measured over the window the writer was actually busy
+(producing plus draining). An earlier version divided all rows by the drain
+after producers stopped, which counted rows written during production against a
+window that excluded it and overstated the rate.
 
-| consumer group | drain time | note |
-|---|---|---|
-| `obs-guardrail` | 12.4 s | Scans every event; CPU-bound, no LLM calls |
-| `obs-storage` | 66.8 s | The durable write path |
-| `obs-eval` | 30.4 s | Holds messages unacked **on purpose** while batching |
+## 3. What the reconciliation caught: the consumers deadlocked each other
 
-`obs-eval` being slower is not a problem to fix; it is the batching that makes
-LLM-judge scoring affordable. Reporting one combined drain number would have
-made the storage writer look several times slower than it is, which is why the
-harness measures each group separately.
+The first run of this test, on the code as it was, reported **245 of 9,000 spans
+missing** and a storage group that had not drained after 180 s
+([`evidence/loadtest_paced_before_lock_fix.txt`](evidence/loadtest_paced_before_lock_fix.txt)).
 
-**Postgres write throughput: 134.7 rows/s** on the durable path (9,000 spans),
-single worker, no tuning, on a laptop running the database in a container.
+The worker log said why: `DeadlockDetectedError: deadlock detected`, eight times.
+The storage writer and the guardrail scanner read the same stream in different
+consumer groups, so they are always writing *different* batches that mention the
+*same* traces. Both upsert those `traces` rows, each in its own batch's arrival
+order. Two transactions locking the same rows in opposite orders is a lock cycle;
+Postgres resolves it by killing one.
 
----
+Nothing was lost -- the victim batch stays unacked, and the reclaim loop retried
+it; all 9,000 spans were in Postgres a few minutes later, with zero dead letters.
+But "a few minutes" was the problem: a deadlocked batch waited the 60 s claim idle
+time, then a 30 s reclaim interval, and only 100 messages are reclaimed per
+interval.
+
+Two fixes, each tested:
+
+* **One lock order.** Every multi-row write to `traces` and `spans` goes in
+  primary-key order, in all three writers. A single global order cannot form a
+  cycle. `tests/integration/test_consumer_lock_order.py` runs both consumers
+  concurrently over the same 60 traces in opposite orders against real Postgres:
+  the old code deadlocks in the first round, the fixed code never does.
+* **Retry a deadlock victim immediately.** A deadlock or serialization failure
+  is the one transient error where retrying at once is the documented remedy,
+  and `process()` is idempotent by design, so the consumer base retries it up to
+  three times with jitter before falling back to redelivery.
+
+Same command, same machine, after the fix: zero deadlocks, every group drained in
+under 30 s, 9,000 of 9,000 spans written.
 
 ## 4. Where it breaks, and how
 
-An unthrottled burst is a different test, and worth running because it finds the
-safety valve rather than the steady state.
+An unthrottled burst finds the safety valve rather than the steady state
+([`evidence/loadtest_burst.txt`](evidence/loadtest_burst.txt)).
 
-| mode | ingest rate | dropped | loss rate |
+| mode | offered rate | published | dropped by the SDK |
 |---|---|---|---|
-| paced (744/s) | 744 events/s | 0 | 0% |
-| burst (unthrottled) | 35,010 events/s | 5,950 of 16,000 | **37%** |
+| paced | 785 events/s | 12,000 | 0 (0%) |
+| burst | 25,812 events/s (16,000 events in 0.62 s) | 10,050 | **5,950 (37.2%)** |
 
-At 35k events/s the SDK's bounded 10,000-event queue fills and the publisher
-**sheds load**: it drops the event, increments a counter, logs with geometric
-backoff, and returns immediately. It does not block the caller and does not grow
-memory.
+At that rate the SDK's bounded 10,000-event queue fills faster than the drain
+thread can empty it, and the publisher **sheds load**: it drops the event,
+increments a counter, logs with backoff, and returns immediately. It does not
+block the caller and does not grow memory. Everything that was published reached
+Postgres; the spans "missing" from that run are exactly the shed events, which
+never left the process.
 
-That is the designed behaviour and the correct trade. The alternative (an
-unbounded queue) converts a Redis outage into an out-of-memory kill of
-SupportPilot itself, which is precisely the failure this architecture exists to
-prevent. **Losing observability data is always preferable to losing the ticket.**
-
-Drops are visible, not silent: `Observability.stats()` exposes
-`dropped_queue_full`, and the log line names the count. If it happens in
-production, raise `OBS_QUEUE_SIZE` or add a worker replica.
-
----
-
-## 5. Two things the load test found that review did not
-
-### A regression I introduced while "optimizing"
-
-Batching the per-span upserts into one statement was a genuine win. Encouraged
-by that, I also collapsed the per-trace rollup `UPDATE`s into a single statement
-using correlated subqueries. It looked strictly better: eleven round trips
-became one.
-
-It measured **25% slower**:
-
-| rollup form | write throughput |
-|---|---|
-| GROUP BY + one UPDATE per trace | **134.7 rows/s** |
-| single UPDATE, correlated subqueries | 91.4 rows/s |
-
-The correlated form runs eight aggregate subqueries *per trace row* instead of
-one shared `GROUP BY` pass over the batch. Round trips were never the
-bottleneck; repeatedly scanning `spans` was. Reverted, and the reason is now a
-comment in `storage_writer.py` so nobody re-applies it.
-
-The general lesson is the reason this report exists: "fewer round trips" is a
-heuristic, not a measurement.
-
-### A monitoring endpoint that lied
-
-`/health/meta` reported `"database unreachable"` against a completely healthy
-database. It read ORM rows after its read-only session had rolled back, raised
-`DetachedInstanceError`, caught it in a broad `except`, and reported the generic
-message. An endpoint whose entire job is telling you which dependency broke was
-naming the wrong one. Fixed by selecting columns inside the session, and by
-reporting the actual exception type instead of a guess.
+That is the designed behaviour and the right trade. The alternative, an
+unbounded queue, turns a Redis outage or a traffic spike into an out-of-memory
+kill of SupportPilot itself -- the failure this architecture exists to prevent.
+**Losing observability data is always preferable to losing the ticket.** Drops
+are visible, not silent: `Observability.stats()` exposes `dropped_queue_full`,
+and SupportPilot's integration surfaces it on its own `/health`.
 
 ---
+
+## 5. An optimisation that measured slower
+
+Batching the per-span upserts into one statement was a genuine win. Collapsing
+the per-trace rollup `UPDATE`s into one statement with correlated subqueries
+looked strictly better too -- eleven round trips became one -- and **measured
+about 25% slower** in an earlier session (121.9 → 91.4 rows/s, under the old
+throughput formula; not re-measured here). The correlated form runs eight
+aggregate subqueries per trace row instead of one shared `GROUP BY` pass.
+Round trips were not the bottleneck; scanning `spans` repeatedly was. It was
+reverted, and the reason is a comment in `storage_writer.py` so nobody re-applies
+it. "Fewer round trips" is a heuristic, not a measurement.
 
 ## 6. Honest limitations
 
-* **Single box.** Producer, consumers and databases share a machine. A real
-  deployment adds network latency (Render → Neon is a WAN hop) and removes CPU
-  contention. Expect lower throughput and higher per-write latency in
-  production, and re-run this there before quoting numbers.
+* **One contended machine.** Producer, consumers and databases share a laptop
+  that was short of memory. A real deployment adds network latency (Render →
+  Neon is a WAN hop) and removes this contention. Re-run there before quoting
+  production numbers.
 * **One worker process.** All roles share one event loop. The consumer-group
-  design supports horizontal scaling (`hostname:pid` consumer names, `XCLAIM`
-  recovery), but that was not measured here.
-* **The eval scorer used the heuristic backend.** No LLM API calls were made, so
-  these numbers do not include judge latency. That is intentional: judge latency
-  is provider latency, not platform latency, and it is off the critical path by
-  construction.
-* **Upstash's free tier is 10,000 commands/day**, which the paced test would
-  exhaust in about 13 seconds. The free-tier deployment is sized for demo
-  traffic, not this load; see `docs/DEPLOY.md` for the command-budget maths.
-* **No sustained soak.** The longest run was ~2 minutes. Connection-pool
-  exhaustion and memory growth over hours are unmeasured.
-
----
-
-## 7. Summary for a résumé line
-
-> Built an observability platform whose client SDK adds **p99 29 µs** to the
-> host application's request path, sustains **744 events/s with zero loss**, and
-> sheds load rather than blocking when its bounded queue fills. Load testing
-> caught a 25% throughput regression in an optimization that looked correct by
-> inspection.
+  design supports more replicas (`hostname:pid` consumer names, `XCLAIM`
+  recovery, and an e2e test that a second worker joins the group), but
+  throughput with more than one was not measured.
+* **No LLM judge latency.** The eval scorer ran its free heuristic backend. Judge
+  latency is the provider's, off the ingestion path by construction.
+* **Upstash's free tier is 10,000 commands/day**, which this load would exhaust
+  in seconds. The free-tier deployment is sized for demo traffic; see
+  `docs/DEPLOY.md`.
+* **No soak.** The longest run was a few minutes. Connection-pool behaviour and
+  memory growth over hours are unmeasured.

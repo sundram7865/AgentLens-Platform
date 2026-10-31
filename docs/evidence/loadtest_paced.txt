@@ -1,0 +1,49 @@
+producing 1500 traces x 8 events at concurrency 30, paced at 4.0/s per slot...
+flushing the SDK buffer...
+waiting for consumers to drain...
+
+==================================================================
+INGESTION LOAD TEST
+==================================================================
+  traces                  1500
+  events                  12000
+  concurrency             30
+
+  SDK publish overhead (what the agent's request path pays)
+    p50                          2.1 us
+    p95                          9.6 us
+    p99                         44.0 us
+    max                        341.5 us
+
+  ingest throughput            785.0 events/s
+  produce time                 15.29 s
+  drain time (all groups)      29.54 s
+    obs-eval                   29.54 s
+    obs-guardrail              26.66 s
+    obs-storage                26.90 s  <- durable write path
+  peak consumer lag             9249 messages
+  spans expected                9000
+  spans written                 9000
+  spans missing                    0
+  write throughput             213.4 rows/s
+  mean event size              609.6 bytes
+
+  published                    12000
+  dropped                          0
+  loss rate                 0.000000
+
+  lag over time (stream length / max group lag)
+    t+  0.0s  len= 14886  lag=     0 
+    t+  4.2s  len= 18286  lag=  2349 #######################################
+    t+  8.5s  len= 21686  lag=  4908 ########################################
+    t+ 12.6s  len= 25086  lag=  7617 ########################################
+    t+ 16.8s  len= 26886  lag=  8999 ########################################
+    t+ 20.9s  len= 26886  lag=  8199 ########################################
+    t+ 25.0s  len= 26886  lag=  6599 ########################################
+    t+ 29.0s  len= 26886  lag=  4899 ########################################
+    t+ 33.2s  len= 26886  lag=  3799 ########################################
+    t+ 37.2s  len= 26886  lag=  2199 ####################################
+    t+ 41.2s  len= 26886  lag=   299 ####
+==================================================================
+
+wrote docs/evidence/loadtest_paced.json

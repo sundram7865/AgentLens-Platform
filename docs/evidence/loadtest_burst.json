@@ -1,0 +1,34 @@
+{
+  "traces": 2000,
+  "events": 16000,
+  "concurrency": 200,
+  "publish_overhead_us": {
+    "p50": 1.3,
+    "p95": 2.6,
+    "p99": 6.6,
+    "max": 5971.0,
+    "mean": 2.3
+  },
+  "ingest_throughput_events_per_s": 25812.5,
+  "produce_seconds": 0.62,
+  "drain_seconds": 14.96,
+  "group_drain_seconds": {
+    "obs-guardrail": 13.8,
+    "obs-storage": 13.91,
+    "obs-eval": 14.96
+  },
+  "peak_consumer_lag": 9223,
+  "spans_expected": 12000,
+  "spans_written": 7537,
+  "spans_missing": 4463,
+  "event_bytes_mean": 609.6,
+  "write_throughput_rows_per_s": 518.7,
+  "published": 10050,
+  "dropped": 5950,
+  "loss_rate": 0.371875,
+  "environment": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "python": "3.12.6",
+    "cpus": 8
+  }
+}

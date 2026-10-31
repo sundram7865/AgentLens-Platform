@@ -26,8 +26,13 @@ entry and measures nothing. So the evaluation uses three separate sets:
 | Set | Size | Purpose |
 |---|---|---|
 | `injection_holdout.json` | 20 | Attacks **not** in the corpus. The honest recall number. |
-| `benign_samples.json` | 40 | Real support messages. The false-positive rate. |
-| `injection_signatures.json` | 40 | Leave-one-out: each signature scored against an index built without it. |
+| `benign_samples.json` | 40 | Hand-written support messages, shaped like SupportPilot tickets. The false-positive rate. |
+| `injection_signatures.json` | 39 | Leave-one-out: each signature scored against an index built without it. |
+
+Raw output of the run these numbers come from:
+[`evidence/injection_threshold.txt`](evidence/injection_threshold.txt) and
+[`.json`](evidence/injection_threshold.json). Re-running the script reproduces
+them exactly; the detector is deterministic.
 
 The benign set is deliberately adversarial. It contains "Ignore my last
 message, I found the tracking link", "Could a manager override the 30 day
@@ -118,11 +123,11 @@ and after loading each engine and scanning a sample ticket.
 
 | Engine | Baseline RSS | After loading + one scan | Delta |
 |---|---|---|---|
-| `builtin` | 18.9 MB | **59.0 MB** | 40.1 MB |
-| `presidio` (with `en_core_web_sm`) | 18.9 MB | **153.5 MB** | 134.6 MB |
+| `builtin` (default image) | 17.3 MB | **38.8 MB** | 21.6 MB |
+| `presidio` (with `en_core_web_sm`) | 17.2 MB | **162.6 MB** | 145.3 MB |
 
 **The measurement contradicted the assumption.** Presidio was expected not to
-fit a 512 MB box. It fits comfortably: 154 MB resident, leaving room for
+fit a 512 MB box. It fits comfortably: 163 MB resident, leaving room for
 FastAPI, SQLAlchemy, asyncpg and redis.
 
 What genuinely does not fit is Presidio's **own default**. `AnalyzerEngine()`

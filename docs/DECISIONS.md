@@ -53,11 +53,11 @@ model judge.
 used in FinFlow), cosine-similarity against ~30 stored known-injection
 embeddings."
 
-**Built:** high-precision rules plus TF-IDF cosine similarity over a 40-entry
-corpus, implemented in **pure Python**. sentence-transformers is available via
+**Built:** high-precision rules plus TF-IDF cosine similarity over a 39-entry
+signature corpus, implemented in **pure Python**. sentence-transformers is available via
 `OBS_INJECTION_BACKEND=embeddings`.
 
-**Why:** forty short documents do not justify numpy and scikit-learn (~100 MB)
+**Why:** thirty-nine short documents do not justify numpy and scikit-learn (~100 MB)
 or sentence-transformers plus a model (~250 MB resident) on a 512 MB box. More
 importantly, the measurement showed similarity alone was not the main signal:
 paraphrased attacks score ~0.33 on lexical similarity while the rules score them
@@ -91,8 +91,8 @@ implements that rather than argmax.
 **Plan:** "Test its memory footprint locally before assuming it fits a free-tier
 deploy box."
 
-**Measured** (`scripts/measure_pii_memory.py`): builtin **59 MB** resident,
-Presidio **154 MB**. Both fit in 512 MB. The assumption that Presidio would not
+**Measured** (`scripts/measure_pii_memory.py`, on Linux; output in
+`docs/evidence/pii_memory.txt`): builtin **39 MB** resident, Presidio **163 MB**. Both fit in 512 MB. The assumption that Presidio would not
 fit was wrong.
 
 **What the measurement actually found** was worse and less obvious: Presidio's
@@ -206,6 +206,86 @@ Neither of these was visible in review:
   python-multipart 0.0.32; all three test layers pass on the new stack. This is
   gotcha #14 landing exactly as predicted, which is the argument for having the
   job at all.
+* **CI had never been green.** Two jobs failed on every push, and neither
+  failure reproduces on the Windows machine the code was written on:
+  * *Docker smoke test:* `docker-entrypoint.sh` was committed as `100644`
+    (`core.filemode=false` on Windows), so on a Linux builder the container died
+    with `exec /app/entrypoint.sh: permission denied` before printing a line.
+    Docker Desktop on Windows marks every file executable, which hid it. The
+    same image is what Render builds, so the documented free-tier deploy could
+    not have started. Reproduced by building from `git archive HEAD` (tar keeps
+    git's modes), fixed with `COPY --chmod=0755` plus the git mode, and the
+    rebuilt image passes the smoke test under the same conditions.
+  * *End-to-end:* the e2e fixture claimed to "migrate from scratch, exactly as
+    a cold deploy does" but never cleared the schema. CI runs the integration
+    suite first against the same database, and it builds tables with
+    `metadata.create_all`, so Alembic hit `relation "traces" already exists`.
+    The fixture now drops and recreates the schema before migrating.
+* **The SupportPilot integration was written against a SupportPilot that does
+  not exist.** Checked against the real repository, three of its assumptions
+  were wrong: SupportPilot calls Gemini through `google.generativeai`, not a
+  LangChain model, so the callback handler would have recorded zero LLM calls;
+  `AGENT_EXECUTION_MODE=process` uses `spawn`, which pickles the graph config,
+  and the handler the integration put there cannot be pickled; and the
+  documented call sites (`tools/gateway.py`, `run_agent`, `ainvoke`) are not in
+  the code. Its tests passed because they drove a fake LangChain model the real
+  app never uses. Rebuilt around `trace_operation`, the one function every
+  SupportPilot step, Gemini call and UrbanKart request already passes through,
+  with the trace id derived from `agent_run_id` so it survives the executor
+  thread and spawned processes. Tested through a replica of SupportPilot's real
+  control flow, a spawned child against real Redis, and the real SupportPilot.
+* **Those tests were not even running.** The integration conftest marked any
+  test whose *path contained* "integration", which included
+  `test_supportpilot_integration.py`, an in-memory test. It was skipped in every
+  unit run. Matching is by directory now.
+* **Running the test suites wiped the dev database.** Integration and e2e tests
+  defaulted to the same `obs` database `docker compose` serves to the
+  dashboard, and TRUNCATE everything. They now default to an `obs_test`
+  database on the same server, created on first use.
+* **The platform reported itself degraded while idle.** The scheduler only
+  heartbeated when a job ran (every 5 minutes or more), and `/health/meta`
+  calls a worker stale after 60 s. It now heartbeats on its own 15 s clock,
+  like the stream consumers.
+* **The worker raced the migrations on every cold `docker compose up`.** It
+  depended on the API being *started*, not *healthy*, so the scheduler hit
+  `relation "job_runs" does not exist` and the supervisor took every consumer
+  role down with it until the restart policy recovered. It now waits for the
+  API's health check, which only passes after `alembic upgrade head`.
+* **The publisher was not fork-safe.** A process that forked while the drain
+  thread held the queue's lock gave its child a lock nobody would ever release,
+  and the child's first `publish()` blocked forever -- in the request path.
+  gunicorn `--preload` and Celery prefork both fork after import. An
+  `os.register_at_fork` hook now rebuilds the queue, locks and thread in the
+  child. The test forks with the lock deliberately held: it deadlocks against
+  the old publisher and passes against the new one, on Linux.
+* **The consumer groups deadlocked each other.** Found only once the load test
+  reconciled rows in Postgres against what was sent: 245 of 9,000 spans were
+  missing at the end of a run. The storage writer and guardrail scanner both
+  upsert `traces` rows, each in its own batch's arrival order, from different
+  batches of the same stream: a lock cycle Postgres broke eight times in one
+  run. Nothing was lost (the victims were retried by redelivery), but each one
+  waited a minute and a half. Every multi-row write now goes in primary-key
+  order, and a deadlock victim is retried immediately. An integration test runs
+  both consumers concurrently in opposite orders against real Postgres: the old
+  code deadlocks in the first round. `docs/LOADTEST.md` §3.
+* **Every worker container was permanently "unhealthy".** The image's
+  `HEALTHCHECK` curled the API port, which a worker does not serve. A health
+  check that is always red hides the day a worker really dies. It is
+  role-aware now: the API answers HTTP, a worker answers from its own heartbeats.
+* **The Upstash budget arithmetic was off by half.** `render.yaml` claimed about
+  2,880 idle commands a day for all three consumer groups; it is 2,880 *per
+  group*, and the reclaim loop's `XPENDING` doubles it to 17,280 -- over the
+  10,000 free tier for a service that never sleeps. Measured, then fixed with a
+  longer reclaim interval (`docs/DEPLOY.md`, `docs/evidence/redis_idle_commands.txt`).
+* **Numbers that did not survive re-measurement.** The PII engines measure 39 MB
+  (built-in) and 163 MB (Presidio), not 59 and 154; the injection corpus has 39
+  signatures, not 40; "173 B of JS per page" is the route's own chunk, while a
+  browser's first load is 106 kB. Each is now stated as measured, with its raw
+  output in `docs/evidence/`.
+* **A span opened outside any trace split its own request in two.** Each nested
+  span minted a fresh trace id while still naming the outer span as parent. A
+  span with no surrounding context now becomes the context for what it
+  contains, and never takes a parent from a different trace.
 * **The pins and the ranges had drifted apart, twice.** `requirements*.txt` pins
   what CI installs; `pyproject.toml` declares what the package claims to be
   compatible with. Nothing linked them, so `structlog` sat at 26.1.0 against a

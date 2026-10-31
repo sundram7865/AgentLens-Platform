@@ -1,0 +1,23 @@
+# scripts/measure_pii_memory.py inside the platform image (python:3.12-slim, Linux), 2026-10-31.
+# RSS is peak resident set size from getrusage (ru_maxrss) in a fresh subprocess per engine.
+
+    engine   resolved   baseline     loaded     delta  detects
+   builtin    builtin      17.3M      38.8M     21.6M  CREDIT_CARD, EMAIL_ADDRESS, IN_PAN, PHONE_NUMBER
+  presidio          -          -          -         -  NOT INSTALLED
+           RuntimeError: OBS_PII_ENGINE=presidio but presidio-analyzer is not importable. Install with: pip install 'obs-platform[presidio]' && python 
+
+   builtin: 39 MB resident -> fits
+
+# Same script, in a throwaway container with the [presidio] extra installed
+# (presidio-analyzer 2.2.366, spaCy 3.8.18, en_core_web_sm 3.8.0):
+
+    engine   resolved   baseline     loaded     delta  detects
+   builtin    builtin      17.2M      44.1M     26.9M  CREDIT_CARD, EMAIL_ADDRESS, IN_PAN, PHONE_NUMBER
+  presidio   presidio      17.2M     162.6M    145.3M  CREDIT_CARD, EMAIL_ADDRESS, IN_PAN, LOCATION, PERSON, PHONE_NUMBER
+
+   builtin: 44 MB resident -> fits
+  presidio: 163 MB resident -> fits
+
+# builtin reads higher here (44 vs 39 MB) because Presidio's dependencies are installed and
+# partly imported by the shared package code. The default image has neither; 39 MB is the
+# number for the deployed configuration.

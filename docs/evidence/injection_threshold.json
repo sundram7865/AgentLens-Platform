@@ -1,0 +1,10 @@
+{
+  "backend": "lexical",
+  "recommended_threshold": 0.61,
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1": 1.0,
+  "false_positive_rate": 0.0,
+  "holdout_attacks": 20,
+  "benign_samples": 40
+}

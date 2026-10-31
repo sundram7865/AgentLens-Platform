@@ -1,0 +1,66 @@
+# The real SupportPilot agent, patched with integrations/supportpilot/supportpilot.patch,
+# recording into a running AgentLens. 2026-10-31.
+#
+# SupportPilot: github.com/sundram7865/SupportPilot @ ca317cd, `git apply supportpilot.patch`,
+# its own Dockerfile, its own Alembic migrations (16) and app/scripts/seed_demo.py, Postgres 16
+# with pgvector, its own Redis, its UrbanKart mock. AI_PROVIDER=mock, AGENT_EXECUTION_MODE=thread,
+# DEV_AUTH_ENABLED=true. OBS_REDIS_URL pointed at AgentLens's Redis (docker compose stack).
+#
+# Agent runs were started through SupportPilot's own API:
+#   POST /agent/tickets/{ticket_id}/run   (x-organization-id + dev-auth headers)
+#
+# Runs, as SupportPilot reported them:
+#   5c5bb961  FAILED     "Agent graph exceeded timeout of 90.0 seconds." -- first run on a cold
+#             machine; zero steps started (LangGraph's Postgres checkpointer was creating its
+#             tables). AgentLens recorded it as an error trace, below.
+#   fe94f2ba  COMPLETED  NEEDS_HUMAN_APPROVAL   ticket "Where is my order ORD-1001?"
+#   fd4ffcbb  COMPLETED  NEEDS_HUMAN_APPROVAL   ticket "Product arrived damaged"
+#   f9a6d7a7  COMPLETED  NEEDS_HUMAN_APPROVAL   ticket "Payment deducted but order not created"
+#   70311feb  COMPLETED  ESCALATE_TO_MANAGER    ticket "I will file consumer court complaint" (risk CRITICAL)
+#
+# What AgentLens stored -- GET /v1/traces?tenant_id=<SupportPilot organization id>:
+tr_70311feb870048e9b564ae0b1865ac15  ok     295 ms     6 spans  ESCALATE_TO_MANAGER  LEGAL_RISK
+tr_f9a6d7a732834075a9d6817e0348ef33  ok     553 ms     6 spans  NEEDS_HUMAN_APPROVAL OTHER
+tr_fd4ffcbb5b734039a2130d9070c3aa54  ok     128 ms     6 spans  NEEDS_HUMAN_APPROVAL OTHER
+tr_fe94f2ba9e0b4ea39b486edb564467d4  ok    8433 ms     6 spans  NEEDS_HUMAN_APPROVAL OTHER
+tr_5c5bb9610c5a4433a3a1c6bda797d98d  error 106331 ms   0 spans  (the timed-out run)
+
+# Each trace id is "tr_" + the SupportPilot agent_run_id: one run, one trace, derived in the
+# graph's executor thread with nothing passed to it.
+#
+# With AI_PROVIDER=mock SupportPilot never calls Gemini, so these runs have no llm:* spans.
+# The Gemini path (model, tokens, fallback chain, cost) is covered by the replica tests and the
+# spawned-process integration test instead. No mock run paused for approval, so the resume path
+# is covered the same way.
+#
+# One run in detail -- GET /v1/traces/tr_fe94f2ba9e0b4ea39b486edb564467d4:
+
+trace_id    tr_fe94f2ba9e0b4ea39b486edb564467d4
+tenant_id   756823dd-02b1-4802-8d74-1afec63136cc  (SupportPilot organization id)
+service     supportpilot | status ok | latency_ms 8433
+attributes  {"ticket_id": "2e6f8ed8-2bf5-4e07-bdbc-f76282b0c5c7", "agent_run_id": "fe94f2ba-9e0b-4ea3-9b48-6edb564467d4", "phase": "run", "decision": "NEEDS_HUMAN_APPROVAL", "detected_category": "OTHER"}
+input       {"question": "Where is my order ORD-1001?\n\nHi, where is my order ORD-1001? It was supposed to arrive today."}
+output      {"answer": "Hi, thanks for reaching out. I understand that your payment-related issue needs attention. We will verify the payment and order details. If a refund is applicable, it will be processed only after the required review and approval.", "category": "OTHER", "decision": "NEEDS_HUMAN_APPROVAL", "groundedness": "GROUNDED"}
+
+  chain  agent_step:load_ticket_context     ok     59 ms  {}
+  chain  agent_step:retrieve_knowledge      ok   2465 ms  {"documents": ["Demo Refund Policy", "Demo Shipping Policy", "Demo Damaged Product SOP", "Demo Legal Risk SOP", "Demo Support Tone Guide"]}
+  chain  agent_step:classify_ticket         ok      0 ms  {"detected_category": "OTHER", "detected_priority": "MEDIUM", "classification_confidence": 0.5}
+  chain  agent_step:draft_response          ok      0 ms  {"draft_attempts": 1, "draft_response": "Hi, thanks for reaching out. I understand that your payment-related issue needs attention. We will verify the
+  chain  agent_step:groundedness_check      ok      0 ms  {"groundedness_status": "GROUNDED", "groundedness_reasons": []}
+  chain  agent_step:decision                ok      0 ms  {"decision": "NEEDS_HUMAN_APPROVAL", "policy_reasons": ["Classification confidence is low: 0.5."], "policy_blocked_auto_reply": true}
+
+# Note the answer: a "where is my order" ticket got a reply about a payment issue. That is
+# SupportPilot's mock LLM, not a real model -- and an irrelevant answer of exactly the kind
+# AgentLens's answer-relevancy scoring is there to catch once a trace is sampled.
+
+# SupportPilot's own test suite, run inside the patched container with AgentLens enabled
+# (OBS_REDIS_URL set, so every instrumented call path was live during the tests):
+#
+#   cd /app && python -m pytest tests -q
+#   598 passed, 2 warnings in 22.83s
+#
+# The first full run reported 593 passed, 5 failed. Four were httpx.ConnectError: the tests
+# hard-code http://urbankart-mock-api:8001, SupportPilot's compose service name, which did not
+# exist on this ad-hoc network; the fifth (test_analytics_overview_counts_core_workflow) failed
+# only as the first test of a cold session and passed alone and in two repeat runs. With the
+# mock given that network alias the whole suite passed, as above. None involved the patch.

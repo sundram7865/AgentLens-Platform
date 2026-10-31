@@ -1,0 +1,53 @@
+# BEFORE the lock-order fix (commit that sorts writes by primary key). Same command, same machine.
+# During this run the worker logged 8 "worker.batch_failed ... DeadlockDetectedError: deadlock detected"
+# (7 storage, 1 guardrail). The 245 missing spans were pending, not lost: they landed over the next
+# few minutes through the reclaim loop (9,000/9,000 in Postgres afterwards, 0 dead letters).
+
+producing 1500 traces x 8 events at concurrency 30, paced at 4.0/s per slot...
+flushing the SDK buffer...
+waiting for consumers to drain...
+
+==================================================================
+INGESTION LOAD TEST
+==================================================================
+  traces                  1500
+  events                  12000
+  concurrency             30
+
+  SDK publish overhead (what the agent's request path pays)
+    p50                          2.1 us
+    p95                          8.5 us
+    p99                         35.5 us
+    max                        386.9 us
+
+  ingest throughput            713.9 events/s
+  produce time                 16.81 s
+  drain time (all groups)     180.07 s
+    obs-eval                  122.69 s
+    obs-guardrail             103.91 s
+  peak consumer lag            11999 messages
+  spans expected                9000
+  spans written                 8755
+  spans missing                  245
+  write throughput               0.0 rows/s
+  mean event size              609.6 bytes
+
+  published                    12000
+  dropped                          0
+  loss rate                 0.000000
+
+  lag over time (stream length / max group lag)
+    t+  0.0s  len=  2886  lag=     0 
+    t+ 30.1s  len= 14886  lag= 11899 ########################################
+    t+ 48.0s  len= 14886  lag= 11899 ########################################
+    t+ 67.3s  len= 14886  lag= 11899 ########################################
+    t+ 85.7s  len= 14886  lag= 11199 ########################################
+    t+103.9s  len= 14886  lag=  6899 ########################################
+    t+121.7s  len= 14886  lag=     0 
+    t+139.4s  len= 14886  lag=     0 
+    t+157.1s  len= 14886  lag=     0 
+    t+174.9s  len= 14886  lag=     0 
+    t+192.6s  len= 14886  lag=     0 
+==================================================================
+
+wrote docs/evidence/loadtest_paced.json

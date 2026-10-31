@@ -13,7 +13,8 @@ Two engines behind one interface:
     locations.
 
     The memory cost was measured, not assumed (``scripts/measure_pii_memory.py``):
-    **59 MB** resident for builtin, **154 MB** for Presidio with the small model.
+    **39 MB** resident for builtin, **163 MB** for Presidio with the small model
+    (``docs/evidence/pii_memory.txt``).
     Both fit inside a 512 MB free-tier box, so Presidio is opt-in for image size
     and cold-start time rather than because it does not fit.
 

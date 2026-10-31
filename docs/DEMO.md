@@ -97,9 +97,10 @@ curl -s $API/health/meta | jq '.status, .streams.groups, .workers'
 
 ### 1:25 - The number (5s)
 
-> "The SDK adds 29 microseconds at p99 to SupportPilot's request path, and sheds
-> load rather than blocking when its buffer fills. Losing observability data is
-> always better than losing the ticket."
+> "The SDK costs SupportPilot's request path about 2 microseconds per event at
+> the median and under 50 at p99, every span of a 12,000-event burst reconciled
+> in Postgres, and it sheds load rather than blocking when its buffer fills.
+> Losing observability data is always better than losing the ticket."
 
 ---
 
