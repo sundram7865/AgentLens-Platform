@@ -26,6 +26,7 @@ import os
 import queue
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -156,6 +157,32 @@ class RedisStreamPublisher:
         # Best-effort flush on normal interpreter exit: a daemon thread would
         # otherwise be killed with events still buffered.
         atexit.register(self._atexit)
+        _LIVE_PUBLISHERS.add(self)
+
+    def _reinit_after_fork(self) -> None:
+        """Make a forked child's copy usable. Runs in the child, single-threaded.
+
+        fork() copies memory but only the calling thread. The child inherits a
+        queue whose internal lock the (now nonexistent) drain thread may have
+        been holding, and a socket shared with the parent. The first publish()
+        would then block forever on that lock -- in the request path, which is
+        the one thing this class promises never to do. gunicorn --preload and
+        Celery's prefork pool both fork after the app has imported this.
+
+        The parent's buffered events stay the parent's to send.
+        """
+        if self._closed.is_set():
+            return
+        self._queue = queue.Queue(maxsize=self.config.queue_size)
+        self._stop = threading.Event()
+        self._closed = threading.Event()
+        self._client = None
+        self._client_lock = threading.Lock()
+        self._in_flight = 0
+        self._backoff = 0.5
+        self.stats = PublisherStats()
+        self._thread = threading.Thread(target=self._run, name="obs-sdk-publisher", daemon=True)
+        self._thread.start()
 
     # -- public API --------------------------------------------------------- #
     def publish(self, event: ObsEvent) -> bool:
@@ -317,6 +344,19 @@ class RedisStreamPublisher:
                 self._drop_client()
                 time.sleep(self._backoff)
                 self._backoff = min(self._backoff * 2, self.config.reconnect_backoff_max)
+
+
+_LIVE_PUBLISHERS: weakref.WeakSet[RedisStreamPublisher] = weakref.WeakSet()
+
+
+def _reinit_publishers_after_fork() -> None:
+    for publisher in list(_LIVE_PUBLISHERS):
+        with contextlib.suppress(Exception):
+            publisher._reinit_after_fork()
+
+
+if hasattr(os, "register_at_fork"):  # POSIX only; Windows has no fork
+    os.register_at_fork(after_in_child=_reinit_publishers_after_fork)
 
 
 def encode_event(event: ObsEvent) -> dict[str, str]:
