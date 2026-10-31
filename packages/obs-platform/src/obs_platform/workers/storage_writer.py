@@ -129,22 +129,26 @@ class StorageWriter(StreamConsumer):
         for key in span_ends:
             span_starts.pop(key, None)
 
+        # Every multi-row write below goes in primary-key order. The guardrail
+        # scanner and eval scorer write the same `traces` rows from other
+        # batches of the same stream; rows locked in each batch's arrival order
+        # form lock cycles, which the load test hit as "deadlock detected".
         async with self.db.session() as session:
             if span_starts:
                 await insert_ignore(
-                    session, table_of(Span), list(span_starts.values()), ["trace_id", "span_id"]
+                    session,
+                    table_of(Span),
+                    [span_starts[k] for k in sorted(span_starts)],
+                    ["trace_id", "span_id"],
                 )
             if span_ends:
-                # One statement for the whole batch. Safe because span_ends is
-                # keyed by (trace_id, span_id), so no row is touched twice --
-                # which is the condition Postgres rejects. Measured: 292 -> 416
-                # rows/s on the durable write path (docs/LOADTEST.md), i.e. ~1.4x.
-                # Less than the round-trip count suggests, because at this batch
-                # size the JSONB serialisation cost dominates the round trip.
+                # One statement for the whole batch rather than one per span.
+                # Safe because span_ends is keyed by (trace_id, span_id), so no
+                # row is touched twice -- the condition Postgres rejects.
                 await upsert_many(
                     session,
                     table_of(Span),
-                    list(span_ends.values()),
+                    [span_ends[k] for k in sorted(span_ends)],
                     index_elements=["trace_id", "span_id"],
                     update_columns=_SPAN_END_COLUMNS,
                 )
@@ -169,11 +173,16 @@ class StorageWriter(StreamConsumer):
         }
 
         rows = [
-            _merge_trace(trace_id, events, existing.get(trace_id), self.settings.eval_sample_rate)
-            for trace_id, events in trace_events.items()
+            _merge_trace(
+                trace_id,
+                trace_events[trace_id],
+                existing.get(trace_id),
+                self.settings.eval_sample_rate,
+            )
+            for trace_id in sorted(trace_events)
         ]
-        # One statement, not one per trace. Keyed by trace_id and unique by
-        # construction, so no row is touched twice.
+        # One statement, not one per trace, in trace_id order (see process()).
+        # Keyed by trace_id and unique by construction, so no row is touched twice.
         await upsert_many(
             session,
             table_of(Trace),

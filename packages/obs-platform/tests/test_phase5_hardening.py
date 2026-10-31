@@ -167,6 +167,81 @@ class TestMetaHealth:
         assert (await anon_client.get("/health/meta")).status_code in (200, 503)
 
 
+class _DeadlockError(Exception):
+    """Stands in for asyncpg's DeadlockDetectedError: what matters is the SQLSTATE."""
+
+    sqlstate = "40P01"
+
+
+class TestLockConflictRetry:
+    """A batch Postgres aborted to break a deadlock is retried at once, not parked.
+
+    Found by the load test: the storage writer and guardrail scanner deadlocked
+    on `traces`, and each victim batch sat pending for the claim idle time plus
+    a reclaim interval before anything retried it.
+    """
+
+    def test_a_deadlock_is_recognised_through_sqlalchemys_wrapping(self) -> None:
+        from sqlalchemy.exc import DBAPIError
+
+        from obs_platform.workers.base import is_lock_conflict
+
+        wrapped = DBAPIError("INSERT INTO traces ...", {}, _DeadlockError("deadlock detected"))
+        assert is_lock_conflict(wrapped)
+        try:
+            try:
+                raise _DeadlockError("deadlock detected")
+            except _DeadlockError as inner:
+                raise RuntimeError("batch failed") from inner
+        except RuntimeError as outer:
+            assert is_lock_conflict(outer)
+
+    def test_an_ordinary_failure_is_not_a_lock_conflict(self) -> None:
+        from obs_platform.workers.base import is_lock_conflict
+
+        assert not is_lock_conflict(ConnectionError("database unreachable"))
+
+    async def test_a_deadlocked_batch_is_retried_and_acked_in_one_pass(
+        self, worker, redis, monkeypatch
+    ) -> None:
+        await redis.xadd(STREAM, encode_event(_trace_event()))
+        real_process = worker.process
+        calls = 0
+
+        async def deadlock_once(messages):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise _DeadlockError("deadlock detected")
+            return await real_process(messages)
+
+        monkeypatch.setattr(worker, "process", deadlock_once)
+        await worker._process_batch(await worker._read_new())
+
+        assert calls == 2
+        pending = await redis.xpending(STREAM, worker.group)
+        assert pending["pending"] == 0, "the retried batch must be acked, not left pending"
+        assert worker.stats.failed == 0
+
+    async def test_retries_are_bounded(self, worker, redis, monkeypatch) -> None:
+        from obs_platform.workers.base import LOCK_CONFLICT_RETRIES
+
+        await redis.xadd(STREAM, encode_event(_trace_event()))
+        calls = 0
+
+        async def always_deadlock(messages):
+            nonlocal calls
+            calls += 1
+            raise _DeadlockError("deadlock detected")
+
+        monkeypatch.setattr(worker, "process", always_deadlock)
+        await worker._process_batch(await worker._read_new())
+
+        assert calls == LOCK_CONFLICT_RETRIES + 1
+        # Still pending: from here it is ordinary redelivery's job.
+        assert (await redis.xpending(STREAM, worker.group))["pending"] == 1
+
+
 class TestDeadLetterPath:
     async def test_poison_message_is_parked_after_max_attempts(
         self, worker, redis, database, settings

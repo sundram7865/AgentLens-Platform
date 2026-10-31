@@ -37,6 +37,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import random
 import signal
 import socket
 import time
@@ -62,6 +63,37 @@ log = get_logger("obs_platform.worker")
 
 class PermanentError(Exception):
     """This message will never succeed. Dead-letter it; do not retry."""
+
+
+#: Immediate retries for a batch Postgres aborted to break a lock conflict.
+LOCK_CONFLICT_RETRIES = 3
+
+# deadlock_detected, serialization_failure
+_LOCK_CONFLICT_SQLSTATES = frozenset({"40P01", "40001"})
+
+
+def is_lock_conflict(exc: BaseException) -> bool:
+    """True when ``exc`` (or anything it wraps) is a Postgres deadlock or serialization failure.
+
+    SQLAlchemy wraps the driver's error, which wraps asyncpg's, so the SQLSTATE
+    can be on any layer: walk ``orig``, ``__cause__`` and ``__context__``.
+    """
+    seen: set[int] = set()
+    stack: list[BaseException | None] = [exc]
+    while stack:
+        current = stack.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        code = getattr(current, "sqlstate", None) or getattr(current, "pgcode", None)
+        if code in _LOCK_CONFLICT_SQLSTATES:
+            return True
+        if type(current).__name__ in ("DeadlockDetectedError", "SerializationError"):
+            return True
+        orig = getattr(current, "orig", None)
+        stack.extend([orig if isinstance(orig, BaseException) else None])
+        stack.extend([current.__cause__, current.__context__])
+    return False
 
 
 @dataclass
@@ -321,18 +353,38 @@ class StreamConsumer(ABC):
     async def _process_batch(self, messages: list[StreamMessage]) -> None:
         self.stats.batches += 1
         started = time.perf_counter()
-        try:
-            outcome = await self.process(messages)
-        except PermanentError as exc:
-            # The whole batch is unusable. Rare, but it must not loop.
-            outcome = BatchOutcome(dead=[(m, type(exc).__name__, str(exc)) for m in messages])
-        except Exception as exc:
-            # Transient: leave everything pending so it is redelivered.
-            self.stats.failed += len(messages)
-            self.stats.last_error = repr(exc)
-            log.exception("worker.batch_failed", role=self.role, count=len(messages))
-            await self._sleep(1.0)
-            return
+        attempt = 0
+        while True:
+            try:
+                outcome = await self.process(messages)
+                break
+            except PermanentError as exc:
+                # The whole batch is unusable. Rare, but it must not loop.
+                outcome = BatchOutcome(dead=[(m, type(exc).__name__, str(exc)) for m in messages])
+                break
+            except Exception as exc:
+                if is_lock_conflict(exc) and attempt < LOCK_CONFLICT_RETRIES:
+                    # Postgres rolled this transaction back to break a deadlock
+                    # (or a serialization conflict). That is the one transient
+                    # failure where retrying *now* is the documented remedy, and
+                    # process() is idempotent by design. Leaving it to redelivery
+                    # instead parks the batch for the 60 s claim idle time plus
+                    # a reclaim interval -- the load test's slow tail.
+                    attempt += 1
+                    log.warning(
+                        "worker.lock_conflict_retry",
+                        role=self.role,
+                        attempt=attempt,
+                        count=len(messages),
+                    )
+                    await self._sleep(random.uniform(0.05, 0.25) * attempt)
+                    continue
+                # Transient: leave everything pending so it is redelivered.
+                self.stats.failed += len(messages)
+                self.stats.last_error = repr(exc)
+                log.exception("worker.batch_failed", role=self.role, count=len(messages))
+                await self._sleep(1.0)
+                return
 
         if outcome.dead:
             await self._dead_letter(outcome.dead)
@@ -597,6 +649,7 @@ def _flatten_entries(entries: Any) -> list[StreamMessage]:
 
 
 __all__ = [
+    "LOCK_CONFLICT_RETRIES",
     "BatchOutcome",
     "ConsumerStats",
     "ParsedMessage",
@@ -604,4 +657,5 @@ __all__ = [
     "StreamConsumer",
     "StreamMessage",
     "install_signal_handlers",
+    "is_lock_conflict",
 ]

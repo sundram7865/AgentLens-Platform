@@ -76,9 +76,14 @@ class GuardrailScanner(StreamConsumer):
             return outcome
 
         # -- persist: a failure here is transient, so nothing is acked -------
+        # In trace_id order. The storage writer upserts the same `traces` rows
+        # from a different batch of the same stream; each locking them in its
+        # own arrival order is a lock cycle, and under load Postgres broke it
+        # with "deadlock detected" (docs/LOADTEST.md). One global order -- the
+        # primary key -- cannot form a cycle.
         async with self.db.session() as session:
-            for trace_id, results in per_trace.items():
-                await self._persist(session, trace_id, results)
+            for trace_id in sorted(per_trace):
+                await self._persist(session, trace_id, per_trace[trace_id])
 
         outcome.ack.extend(item.message_id for item in scannable)
         return outcome
