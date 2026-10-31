@@ -47,16 +47,27 @@ Create a database, take the **TLS** URL: `rediss://default:<password>@<name>.ups
 The free tier allows **10,000 commands/day**. A naive consumer polling every
 100 ms burns 864,000 commands a day doing nothing at all.
 
-This platform blocks instead of polling. With `OBS_CONSUMER_BLOCK_MS=30000`
-(the value `render.yaml` sets):
+This platform blocks instead of polling. At idle, each consumer group issues one
+`XREADGROUP` per block and one `XPENDING` per reclaim check. Measured on the local
+stack (5 s block, 30 s reclaim) over 120 s of idle: 69 `XREADGROUP` and 12
+`XPENDING`, against a model of 3 × 24 = 72 and 3 × 4 = 12.
+
+With the values `render.yaml` sets (`OBS_CONSUMER_BLOCK_MS=30000`,
+`OBS_CONSUMER_CLAIM_INTERVAL_SECONDS=300`):
 
 ```
-3 consumer groups × (86,400s / 30s)   = 8,640 XREADGROUP/day at idle
+XREADGROUP  3 groups × (86,400 s / 30 s)   = 8,640/day
+XPENDING    3 groups × (86,400 s / 300 s)  =   864/day
+                                             -----------
+                                             9,504/day at idle, never sleeping
 ```
 
-That is already most of the budget, so `render.yaml` also relies on Render's free
-tier sleeping after 15 minutes idle; a sleeping API issues no commands at all.
-In practice a demo deployment uses a few hundred commands a day.
+An earlier version of this page counted only the `XREADGROUP`s and left the
+reclaim interval at its 30 s default, which is another 8,640 `XPENDING` a day:
+17,280 in total, over the free tier for a service that never slept. The budget
+has room only because Render's free tier sleeps after 15 minutes idle, and a
+sleeping API issues no commands at all; a demo deployment uses a few hundred a
+day.
 
 Under real traffic each command carries up to `OBS_CONSUMER_BATCH_SIZE` (200)
 messages, so throughput costs far fewer commands than events.

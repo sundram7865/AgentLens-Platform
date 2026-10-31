@@ -364,6 +364,36 @@ class TestScheduler:
         assert "neon unreachable" in (row.last_error or "")
         assert await scheduler.tick() == ["drift_monitor"], "a failed job must retry"
 
+    async def test_an_idle_scheduler_keeps_heartbeating(self, database, settings):
+        """No job due must not read as a dead worker on /health/meta.
+
+        It heartbeated only when a job ran. Jobs run every five minutes or more,
+        and /health/meta calls a worker stale after four missed heartbeats, so a
+        healthy idle platform reported itself "degraded" most of the time.
+        """
+        import asyncio
+
+        from obs_platform.models import WorkerHeartbeat
+
+        settings.worker_heartbeat_seconds = 0.05  # type: ignore[assignment]
+        scheduler = Scheduler(settings=settings, database=database)
+        scheduler.jobs = []  # nothing is ever due
+
+        async def last_seen() -> datetime:
+            async with database.session() as session:
+                row = (await session.execute(select(WorkerHeartbeat))).scalar_one()
+            return row.last_seen_at
+
+        runner = asyncio.create_task(scheduler.run())
+        await asyncio.sleep(0.1)
+        first = await last_seen()
+        await asyncio.sleep(0.3)
+        second = await last_seen()
+        scheduler.request_stop()
+        await asyncio.wait_for(runner, timeout=5)
+
+        assert second > first, "an idle scheduler stopped reporting liveness"
+
     async def test_one_failing_job_does_not_block_the_others(self, database, settings):
         scheduler = Scheduler(settings=settings, database=database)
 

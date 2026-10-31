@@ -8,6 +8,8 @@
 set -euo pipefail
 
 ROLE="${1:-api}"
+# Read by docker-healthcheck.sh, which cannot see this container's command.
+echo "$ROLE" > /tmp/obs-role
 
 run_migrations() {
   if [ "${OBS_RUN_MIGRATIONS:-true}" = "true" ]; then

@@ -60,13 +60,21 @@ services:
       - key: OBS_WEB_CONCURRENCY
         value: "1" # 512 MB total; a second uvicorn worker doubles the baseline
 
-      # Upstash free tier is 10,000 commands/day. A 5s blocking read is ~17k
-      # commands/day per consumer group at idle, so the block is stretched to
-      # 30s: ~2,880/day for all three groups combined, leaving headroom for the
-      # actual writes. Latency cost is up to 30s on an idle stream, which for a
-      # portfolio demo is invisible -- traffic wakes it immediately.
+      # Upstash free tier is 10,000 commands/day. At idle each of the three
+      # consumer groups issues one XREADGROUP per block and one XPENDING per
+      # reclaim interval (measured: docs/DEPLOY.md). With a 30s block and a
+      # 300s reclaim interval that is 3 x 2,880 + 3 x 288 = 9,504/day if the
+      # service never sleeps -- inside the budget, but only just; Render's
+      # free tier sleeping after 15 idle minutes is what leaves real headroom.
+      # Latency cost is up to 30s on an idle stream, invisible for a demo:
+      # traffic wakes it immediately.
       - key: OBS_CONSUMER_BLOCK_MS
         value: "30000"
+      # Abandoned messages are still reclaimed, within 5 minutes rather than
+      # 30 seconds. At the 30s default the reclaim check alone was another
+      # 8,640 commands/day, which put a never-sleeping service over budget.
+      - key: OBS_CONSUMER_CLAIM_INTERVAL_SECONDS
+        value: "300"
       - key: OBS_CONSUMER_BATCH_SIZE
         value: "200"
       - key: OBS_STREAM_MAXLEN

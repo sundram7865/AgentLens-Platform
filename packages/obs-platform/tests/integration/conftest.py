@@ -23,25 +23,35 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import pytest
+from _pg import TEST_DATABASE_URL, ensure_database  # tests/ is on sys.path via its conftest
 
 pytestmark = pytest.mark.integration
 
-PG_URL = os.environ.get("OBS_TEST_DATABASE_URL", "postgresql+asyncpg://obs:obs@localhost:5432/obs")
+PG_URL = TEST_DATABASE_URL
 REDIS_URL = os.environ.get("OBS_TEST_REDIS_URL", "redis://localhost:6379/1")
 
 ENABLED = os.environ.get("OBS_INTEGRATION", "").strip().lower() in {"1", "true", "yes"}
 
+_HERE = Path(__file__).resolve().parent
+
 
 def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
-    """Mark and skip everything in this package unless integration is requested."""
+    """Mark and skip everything in this package unless integration is requested.
+
+    This hook sees every collected item in the session, not only this
+    directory's, so it must match by location. Matching the substring
+    "integration" in the path also caught ``test_supportpilot_integration.py``,
+    a pure in-memory test, and silently skipped it in every unit run.
+    """
     skip = pytest.mark.skip(
         reason="integration tests need OBS_INTEGRATION=1 plus a running Postgres and Redis"
     )
     for item in items:
-        if "integration" in str(item.fspath):
+        if _HERE in Path(str(item.fspath)).resolve().parents:
             item.add_marker(pytest.mark.integration)
             if not ENABLED:
                 item.add_marker(skip)
@@ -87,6 +97,7 @@ async def database(settings: Any) -> AsyncIterator[Any]:
     from obs_platform.models import Base
 
     try:
+        ensure_database(PG_URL)
         database = Database(settings)
         async with database.engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)

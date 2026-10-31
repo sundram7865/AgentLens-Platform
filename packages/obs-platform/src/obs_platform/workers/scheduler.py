@@ -120,6 +120,12 @@ class Scheduler:
         enabled = [j for j in self.jobs if j.enabled]
         log.info("scheduler.started", jobs=[j.name for j in enabled])
         await self._heartbeat("running")
+        # Liveness on its own clock, like the stream consumers. Heartbeating
+        # only when a job ran left the scheduler silent for most of every
+        # 5-minute drift interval, and /health/meta -- which calls a worker
+        # stale after 4 missed heartbeats (60 s) -- reported a healthy idle
+        # platform as "degraded" almost all the time.
+        heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         try:
             while not self._stop.is_set():
                 await self.tick()
@@ -127,6 +133,9 @@ class Scheduler:
                 # keeps SIGTERM responsive.
                 await self._sleep(min(30, min((j.interval_seconds for j in enabled), default=30)))
         finally:
+            heartbeat_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat_task
             await self._heartbeat("stopped")
             log.info("scheduler.stopped", runs=self.runs, failures=self.failures)
 
@@ -147,6 +156,13 @@ class Scheduler:
     async def _sleep(self, seconds: float) -> None:
         with contextlib.suppress(TimeoutError, asyncio.TimeoutError):
             await asyncio.wait_for(self._stop.wait(), timeout=seconds)
+
+    async def _heartbeat_loop(self) -> None:
+        while not self._stop.is_set():
+            await self._sleep(self.settings.worker_heartbeat_seconds)
+            if self._stop.is_set():
+                return
+            await self._heartbeat("running")
 
     # -- scheduling state --------------------------------------------------
     async def _is_due(self, job: Job) -> bool:

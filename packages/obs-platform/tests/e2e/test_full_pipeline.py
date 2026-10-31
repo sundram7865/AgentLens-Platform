@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from _pg import TEST_DATABASE_URL, ensure_database  # tests/ is on sys.path via its conftest
 
 pytestmark = pytest.mark.e2e
 
@@ -44,21 +45,12 @@ ROOT = Path(__file__).resolve().parents[4]
 SDK_SRC = ROOT / "packages/obs-sdk/src"
 PLATFORM_SRC = ROOT / "packages/obs-platform/src"
 
-PG_URL = os.environ.get("OBS_TEST_DATABASE_URL", "postgresql+asyncpg://obs:obs@localhost:5432/obs")
+PG_URL = TEST_DATABASE_URL
 REDIS_URL = os.environ.get("OBS_TEST_E2E_REDIS_URL", "redis://localhost:6379/3")
 ADMIN_EMAIL = "e2e-admin@obs.test"
 ADMIN_PASSWORD = "e2e-admin-password-long-enough"
 
 ENABLED = os.environ.get("OBS_E2E", "").strip().lower() in {"1", "true", "yes"}
-
-
-def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:  # pragma: no cover
-    skip = pytest.mark.skip(reason="e2e tests need OBS_E2E=1 plus Postgres and Redis")
-    for item in items:
-        if "e2e" in str(item.fspath):
-            item.add_marker(pytest.mark.e2e)
-            if not ENABLED:
-                item.add_marker(skip)
 
 
 class ManagedProcess:
@@ -188,11 +180,20 @@ def infra() -> Iterator[None]:
 
     sync_url = PG_URL.replace("+asyncpg", "+psycopg")
     try:
+        ensure_database(PG_URL)
         engine = create_engine(sync_url)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
     except Exception as exc:
         pytest.skip(f"Postgres unreachable: {exc}")
+
+    # Cold means cold. CI runs the integration suite first against the same
+    # server, and it builds its tables with metadata.create_all -- no
+    # alembic_version row. Migrating on top of that fails with "relation traces
+    # already exists", which is exactly how this job went red on every push.
+    with engine.begin() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE"))
+        conn.execute(text("CREATE SCHEMA public"))
 
     try:
         client = redis_sync.Redis.from_url(REDIS_URL, decode_responses=True)
@@ -237,11 +238,29 @@ def worker(infra: None) -> Iterator[ManagedProcess]:
         _child_env(),
         ROOT,
     )
-    try:
-        time.sleep(3)  # let it create its consumer groups
+    import redis as redis_sync
+
+    client = redis_sync.Redis.from_url(REDIS_URL, decode_responses=True)
+
+    def groups_ready() -> bool:
         assert managed.alive, f"worker died at startup:\n{managed.logs()}"
+        try:
+            names = {g["name"] for g in client.xinfo_groups("obs:events")}
+        except redis_sync.ResponseError:  # stream not created yet
+            return False
+        return {"obs-storage", "obs-guardrail", "obs-eval"} <= names
+
+    try:
+        # Wait for the consumer groups rather than sleeping a fixed 3 s. The
+        # first test's 45 s budget is for the pipeline, not for a cold
+        # interpreter importing the platform -- which on a fresh venv took long
+        # enough to fail that test before the worker had read a message.
+        _wait_for(
+            groups_ready, timeout=90, message="the worker's consumer groups", context=managed.logs
+        )
         yield managed
     finally:
+        client.close()
         managed.stop()
 
 
@@ -559,15 +578,25 @@ class TestGracefulShutdown:
             _child_env(),
             ROOT,
         )
-        try:
-            time.sleep(4)
+        client = redis_sync.Redis.from_url(REDIS_URL, decode_responses=True)
+
+        def storage_consumers() -> int:
             assert second.alive, f"second worker died:\n{second.logs()}"
-            client = redis_sync.Redis.from_url(REDIS_URL, decode_responses=True)
             groups = client.xinfo_groups("obs:events")
-            storage = next(g for g in groups if g["name"] == "obs-storage")
-            assert storage["consumers"] >= 2, "the second worker should have registered"
-            client.close()
+            return int(next(g for g in groups if g["name"] == "obs-storage")["consumers"])
+
+        try:
+            # Polled, not slept. A replica registers on its first XREADGROUP,
+            # which is after a cold interpreter imports the whole platform; a
+            # fixed 4 s sleep failed whenever that import was slow.
+            _wait_for(
+                lambda: storage_consumers() >= 2,
+                timeout=30,
+                message="the second worker to register in obs-storage",
+                context=second.logs,
+            )
         finally:
+            client.close()
             second.stop()
 
 

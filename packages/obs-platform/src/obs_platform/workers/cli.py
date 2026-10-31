@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import socket
 import sys
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from ..db import dispose_db
 from ..logging import configure_logging, get_logger
@@ -37,7 +40,60 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=30.0,
         help="Seconds to let in-flight work finish after SIGTERM (default: 30).",
     )
+    parser.add_argument(
+        "--healthcheck",
+        action="store_true",
+        help="Exit 0 if every role running on this host heartbeated recently, else 1. "
+        "Used by the container HEALTHCHECK; starts no workers.",
+    )
     return parser.parse_args(argv)
+
+
+async def healthcheck(database: Any | None = None, host: str | None = None) -> int:
+    """Liveness for a worker container, from the heartbeats its roles write.
+
+    The image's HEALTHCHECK used to curl the API port for every role. A worker
+    serves no HTTP, so every worker container was permanently "unhealthy" --
+    which hides a worker that has really stopped behind one that never looked
+    alive. Staleness uses the same rule as /health/meta: four missed beats.
+    """
+    from sqlalchemy import select
+
+    from ..db import get_db
+    from ..models import WorkerHeartbeat
+
+    settings = get_settings()
+    db = database or get_db()
+    host = (host or socket.gethostname())[:200]
+    cutoff = datetime.now(UTC) - timedelta(seconds=settings.worker_heartbeat_seconds * 4)
+    try:
+        async with db.session() as session:
+            rows = (
+                await session.execute(
+                    select(WorkerHeartbeat.last_seen_at).where(
+                        WorkerHeartbeat.host == host, WorkerHeartbeat.status == "running"
+                    )
+                )
+            ).all()
+    except Exception as exc:
+        sys.stderr.write(f"unhealthy: cannot read heartbeats: {exc!r}\n")
+        return 1
+    finally:
+        if database is None:
+            await dispose_db()
+    if not rows:
+        sys.stderr.write(f"unhealthy: no running role has heartbeated from {host}\n")
+        return 1
+    stale = [
+        r.last_seen_at
+        for r in rows
+        if (r.last_seen_at if r.last_seen_at.tzinfo else r.last_seen_at.replace(tzinfo=UTC))
+        < cutoff
+    ]
+    if stale:
+        sys.stderr.write(f"unhealthy: {len(stale)} of {len(rows)} roles are stale\n")
+        return 1
+    return 0
 
 
 async def run(roles: list[str] | None, shutdown_timeout: float) -> int:
@@ -79,6 +135,8 @@ async def run(roles: list[str] | None, shutdown_timeout: float) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.healthcheck:
+        return asyncio.run(healthcheck())
     roles = [r.strip().lower() for r in args.roles.split(",") if r.strip()] if args.roles else None
     try:
         return asyncio.run(run(roles, args.shutdown_timeout))

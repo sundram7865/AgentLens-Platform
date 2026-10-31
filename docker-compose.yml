@@ -72,6 +72,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    # Same probe as the Dockerfile's HEALTHCHECK, polled faster so the worker
+    # below is not left waiting 30 s for the first check after boot.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8000/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
     restart: unless-stopped
 
   worker:
@@ -90,8 +98,13 @@ services:
       OBS_EVAL_PROVIDER: ${OBS_EVAL_PROVIDER:-none}
       OBS_EVAL_API_KEY: ${OBS_EVAL_API_KEY:-}
     depends_on:
+      # Healthy, not merely started: uvicorn only answers /health after the
+      # entrypoint has run `alembic upgrade head`. With service_started the
+      # worker raced the migrations on every cold start, the scheduler hit
+      # "relation job_runs does not exist", and the supervisor took every role
+      # down with it until the restart policy brought the container back.
       api:
-        condition: service_started
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:

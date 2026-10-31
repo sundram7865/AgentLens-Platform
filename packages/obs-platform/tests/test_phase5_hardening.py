@@ -59,6 +59,34 @@ async def seed_heartbeat(database, role: str = "storage", seconds_ago: float = 1
         )
 
 
+class TestWorkerContainerHealthcheck:
+    """`obs-worker --healthcheck`, the worker role's container HEALTHCHECK.
+
+    The image probed the API port for both roles, so every worker container was
+    permanently "unhealthy" whether its consumers were alive or not.
+    """
+
+    async def test_fresh_heartbeats_are_healthy(self, database) -> None:
+        from obs_platform.workers.cli import healthcheck
+
+        await seed_heartbeat(database, "storage")
+        await seed_heartbeat(database, "eval")
+        assert await healthcheck(database=database, host="host") == 0
+
+    async def test_one_stale_role_is_unhealthy(self, database, settings) -> None:
+        from obs_platform.workers.cli import healthcheck
+
+        await seed_heartbeat(database, "storage")
+        await seed_heartbeat(database, "eval", seconds_ago=settings.worker_heartbeat_seconds * 5)
+        assert await healthcheck(database=database, host="host") == 1
+
+    async def test_no_heartbeat_from_this_host_is_unhealthy(self, database) -> None:
+        from obs_platform.workers.cli import healthcheck
+
+        await seed_heartbeat(database, "storage")
+        assert await healthcheck(database=database, host="another-container") == 1
+
+
 class TestMetaHealth:
     async def test_reports_worker_rows_without_detaching_them(
         self, anon_client, database, redis

@@ -35,9 +35,15 @@ USER obs
 ENV PYTHONPATH=/app/packages/obs-sdk/src:/app/packages/obs-platform/src
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -fsS http://localhost:${PORT:-8000}/health || exit 1
+COPY --chown=obs:obs --chmod=0755 packages/obs-platform/docker-healthcheck.sh /app/healthcheck.sh
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+  CMD /app/healthcheck.sh
 
-COPY --chown=obs:obs packages/obs-platform/docker-entrypoint.sh /app/entrypoint.sh
+# --chmod, not the git file mode. A checkout made on Windows (core.filemode=false)
+# commits shell scripts as 100644; Linux builders (CI, Render) then copy a
+# non-executable entrypoint and the container dies with "permission denied"
+# before printing a line. Docker Desktop on Windows marks every file executable,
+# which is why that never reproduces locally.
+COPY --chown=obs:obs --chmod=0755 packages/obs-platform/docker-entrypoint.sh /app/entrypoint.sh
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["api"]
